@@ -44,7 +44,7 @@ private class TargetTable(
     private val createSqlTemplate: String,
     val indexSqls: List<String>,
 ) {
-    fun createSqlFor(table: String): String = createSqlTemplate.replace("${TABLE_NAME}", table)
+    fun createSqlFor(table: String): String = createSqlTemplate.replace("\${TABLE_NAME}", table)
 }
 
 private fun readColumns(db: SupportSQLiteDatabase, table: String): List<String> {
