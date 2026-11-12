@@ -1,0 +1,40 @@
+name: Debug Artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/migration-defaults
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: android-actions/setup-android@v3.2.1
+
+      - name: Install SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-37.0" "build-tools;36.0.0" >/dev/null
+
+      - name: Build debug
+        run: ./gradlew --no-daemon --no-configuration-cache :app:assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eta-expressive-debug
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
