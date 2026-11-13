@@ -72,6 +72,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.Alignment
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
 import io.github.mangi.eta.ui.app.NavPerfProbe
 import androidx.compose.runtime.withFrameNanos
@@ -315,6 +317,12 @@ internal fun SettingsScreen(
         delay(SETTINGS_CONTENT_DEFER_MS)
         contentReady = true
     }
+    // 内容就绪后淡入，避免「灰骨架 → 整页」的硬切被读成一次卡顿。
+    val contentAlpha by animateFloatAsState(
+        targetValue = if (contentReady) 1f else 0f,
+        animationSpec = tween(durationMillis = 180),
+        label = "settings-content-alpha",
+    )
     if (!contentReady) {
         SettingsSkeleton(onBack = onBack)
         return
@@ -325,6 +333,7 @@ internal fun SettingsScreen(
         title = stringResource(R.string.ui_set_up_7debf9),
         onBack = onBack,
         modifier = Modifier
+            .graphicsLayer { alpha = contentAlpha }
             .streamDiagnosticMeasure("settings.root.measure")
             .streamDiagnosticDraw("settings.root.draw"),
         topBarModifier = Modifier.streamDiagnosticMeasure("settings.topbar.measure"),
