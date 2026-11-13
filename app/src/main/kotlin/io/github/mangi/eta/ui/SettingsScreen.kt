@@ -56,6 +56,8 @@ import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.runtime.Composable
+import io.github.mangi.eta.ui.app.NavPerfProbe
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -150,6 +152,11 @@ internal fun SettingsScreen(
     onFocusConsumed: () -> Unit = {},
 ) {
     // Read only attach/detach generation so idle sections rebuild observer identities.
+    remember { NavPerfProbe.mark("settings-screen-body-compose"); 0 }
+    LaunchedEffect(Unit) {
+        NavPerfProbe.mark("settings-screen-committed")
+        withFrameNanos { NavPerfProbe.mark("settings-screen-first-frame") }
+    }
     StreamPerformanceDiagnostics.sessionGeneration.longValue
     // Counts only successfully applied compositions; never writes snapshot state.
     SideEffect {

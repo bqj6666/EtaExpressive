@@ -309,11 +309,13 @@ fun AgentAppRoot(
                     focusManager.clearFocus(force = true)
                 }
                 Lifecycle.Event.ON_RESUME -> {
-                    RootAccess.refresh(context)
-                    appViewModel.refreshKimiWeb()
-                    agentState.refreshPermissionHealth()
-                    agentState.refreshRuntimeResults()
-                    agentState.refreshRequestOverhead()
+                    NavPerfProbe.mark("resume-refresh-start")
+                    NavPerfProbe.measure("resume-root-refresh") { RootAccess.refresh(context) }
+                    NavPerfProbe.measure("resume-kimi-web") { appViewModel.refreshKimiWeb() }
+                    NavPerfProbe.measure("resume-permission-health") { agentState.refreshPermissionHealth() }
+                    NavPerfProbe.measure("resume-runtime-results") { agentState.refreshRuntimeResults() }
+                    NavPerfProbe.measure("resume-request-overhead") { agentState.refreshRequestOverhead() }
+                    NavPerfProbe.mark("resume-refresh-end")
                     // 更新检查只在冷启动做一次（见下方 LaunchedEffect）。
                     // 回到前台（授权、分享、装完 APK…）不应该再弹更新弹窗。
                 }
@@ -834,7 +836,7 @@ fun AgentAppRoot(
             onEditAssistant = { id -> pushFromDrawer(AppRoute.AssistantEdit(id)) },
             onOpenAssistants = { pushFromDrawer(AppRoute.Assistants()) },
             onOpenUsageStats = { pushFromDrawer(AppRoute.UsageStats) },
-            onOpenSettings = { pushFromDrawer(AppRoute.Settings) },
+            onOpenSettings = { NavPerfProbe.anchor("settings-tap-drawer"); pushFromDrawer(AppRoute.Settings) },
             remoteSection = remotePaneSection,
             onSelectRemoteSession = { serverId, path ->
                 focusManager.clearFocus(force = true)
@@ -1022,7 +1024,7 @@ fun AgentAppRoot(
                                 AgentHomeAction.OpenSkills -> pushRoute(AppRoute.Skills)
                                 AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
                                 AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
-                                AgentHomeAction.OpenSettings -> pushRoute(AppRoute.Settings)
+                                AgentHomeAction.OpenSettings -> { NavPerfProbe.anchor("settings-tap-home"); pushRoute(AppRoute.Settings) }
                                 AgentHomeAction.OpenBrowser -> pushRoute(AppRoute.Browser)
                                 is AgentHomeAction.EditAssistant -> pushRoute(AppRoute.AssistantEdit(action.id))
                                 AgentHomeAction.OpenModelProviders -> pushRoute(AppRoute.ModelProviders)
@@ -1488,6 +1490,11 @@ fun AgentAppRoot(
                 )
             }
             entry<AppRoute.Settings>(swipeDismiss = navSwipeDismiss) {
+                remember { NavPerfProbe.mark("settings-entry-compose"); 0 }
+                LaunchedEffect(Unit) {
+                    NavPerfProbe.mark("settings-entry-committed")
+                    withFrameNanos { NavPerfProbe.mark("settings-entry-first-frame") }
+                }
                 SettingsScreen(
                     context = context,
                     onNavigate = { route -> pushRoute(route) },
