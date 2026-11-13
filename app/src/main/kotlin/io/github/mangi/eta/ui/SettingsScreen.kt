@@ -55,24 +55,8 @@ import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.rounded.VpnKey
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Surface
-import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
-import androidx.compose.ui.Alignment
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
 import io.github.mangi.eta.ui.app.NavPerfProbe
@@ -308,32 +292,11 @@ internal fun SettingsScreen(
         onDispose { EtaApp.removeServiceStateListener(listener) }
     }
 
-    // 首屏先给 M3 骨架屏：设置页第一次组合 + LazyColumn 测量实测要 60~80ms（冷态 114ms），
-    // 直接压在页面推入动画里就会掉 4~7 帧。这里把真实内容的组合推迟到转场之后再发生，
-    // 期间显示与正式布局同构的骨架，视觉上是一次占位替换而不是卡顿。
-    var contentReady by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        withFrameNanos { }
-        delay(SETTINGS_CONTENT_DEFER_MS)
-        contentReady = true
-    }
-    // 内容就绪后淡入，避免「灰骨架 → 整页」的硬切被读成一次卡顿。
-    val contentAlpha by animateFloatAsState(
-        targetValue = if (contentReady) 1f else 0f,
-        animationSpec = tween(durationMillis = 180),
-        label = "settings-content-alpha",
-    )
-    if (!contentReady) {
-        SettingsSkeleton(onBack = onBack)
-        return
-    }
-
     WithoutPressRipple {
     EtaScaffoldPage(
         title = stringResource(R.string.ui_set_up_7debf9),
         onBack = onBack,
         modifier = Modifier
-            .graphicsLayer { alpha = contentAlpha }
             .streamDiagnosticMeasure("settings.root.measure")
             .streamDiagnosticDraw("settings.root.draw"),
         topBarModifier = Modifier.streamDiagnosticMeasure("settings.topbar.measure"),
@@ -1482,98 +1445,4 @@ private fun SettingsProviderEntry(
         },
         onClick = onClick,
     )
-}
-
-/** 内容组合的延后时长：覆盖 NavDisplay 推入动画的主要部分。 */
-private const val SETTINGS_CONTENT_DEFER_MS = 280L
-
-/**
- * 设置页骨架屏。
- *
- * 按 Material 3 规范用内容占位而不是遮罩弹窗：容器取 `surfaceContainerLow`、
- * 占位块取 `surfaceContainerHighest`、圆角取 `MaterialTheme.shapes`，
- * 用一次缓慢的透明度呼吸表示「正在加载」，真实内容就绪后整体替换。
- */
-@Composable
-private fun SettingsSkeleton(onBack: () -> Unit) {
-    val colors = M3MaterialTheme.colorScheme
-    val pulse by rememberInfiniteTransition(label = "settings-skeleton").animateFloat(
-        initialValue = 0.40f,
-        targetValue = 0.90f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 720, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "settings-skeleton-alpha",
-    )
-    val placeholder = colors.onSurfaceVariant.copy(alpha = 0.18f * pulse + 0.08f)
-    EtaScaffoldPage(
-        title = stringResource(R.string.ui_set_up_7debf9),
-        onBack = onBack,
-    ) {
-        repeat(4) { group ->
-            item(key = "settings-skeleton-$group") {
-                Column(
-                    modifier = Modifier.padding(
-                        start = EtaGroupHorizontalPadding,
-                        end = EtaGroupHorizontalPadding,
-                        bottom = EtaSegmentedGroupSpacing,
-                    ),
-                ) {
-                    // 分组标题占位
-                    Box(
-                        modifier = Modifier
-                            .padding(start = 16.dp, bottom = 8.dp)
-                            .width(88.dp)
-                            .height(14.dp)
-                            .clip(M3MaterialTheme.shapes.small)
-                            .background(placeholder),
-                    )
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = colors.surfaceContainerLow,
-                        shape = M3MaterialTheme.shapes.extraLarge,
-                    ) {
-                        Column {
-                            repeat(3) { row ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(40.dp)
-                                            .clip(CircleShape)
-                                            .background(placeholder),
-                                    )
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth(if (row == 1) 0.55f else 0.38f)
-                                                .height(12.dp)
-                                                .clip(M3MaterialTheme.shapes.small)
-                                                .background(placeholder),
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth(if (row == 1) 0.35f else 0.22f)
-                                                .height(10.dp)
-                                                .clip(M3MaterialTheme.shapes.small)
-                                                .background(placeholder.copy(alpha = placeholder.alpha * 0.7f)),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
