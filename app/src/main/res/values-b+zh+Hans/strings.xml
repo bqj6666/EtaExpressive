@@ -29,6 +29,10 @@
   <string name="action_settings">设置</string>
   <string name="action_new_conversation">新建对话</string>
   <string name="action_back_to_dispatch_console">返回调度台</string>
+  <string name="clear_dispatch_console_title">清空主会话</string>
+  <string name="clear_dispatch_console_message">当前上下文会整体移入回收站，主会话从空白继续。之后可在回收站把这段内容恢复并接回顶部。</string>
+  <string name="clear_dispatch_console_confirm">清空并归档</string>
+  <string name="clear_dispatch_console_empty">当前没有可清空的内容</string>
   <string name="action_conversation_history">会话历史</string>
   <string name="action_more">更多选项</string>
   <string name="action_open_terminal">打开终端</string>
@@ -316,6 +320,7 @@
   <string name="folders_page_remote_summary">已连接 %1$d / 共 %2$d</string>
   <string name="folders_page_empty">还没有分类，点右下角的按钮新建一个分类</string>
   <string name="folders_page_empty_open_remote_agents">管理远程智能体</string>
+  <string name="folders_page_batch_delete_message">删除已选的 %1$d 个分类？其中的对话会移回「聊天」</string>
   <string name="folders_page_delete_message">「%1$s」中的对话会移回「聊天」，分类将被删除</string>
   <plurals name="folders_page_conversation_count">
     <item quantity="other">%d 个对话</item>
@@ -328,6 +333,7 @@
   <string name="drawer_trash_restore">恢复</string>
   <string name="drawer_trash_delete_forever">彻底删除</string>
   <string name="drawer_trash_delete_forever_title">彻底删除？</string>
+  <string name="drawer_trash_batch_purge_message">永久删除已选的 %1$d 个对话？此操作无法撤销</string>
   <string name="drawer_trash_delete_forever_message">永久删除「%1$s」？此操作无法撤销</string>
   <string name="conversation_move_to_trash">移入回收站</string>
   <string name="trash_deleted_today">今天删除</string>
@@ -1619,6 +1625,7 @@
   <string name="chat_edit_replace_message">发送后将替换此消息</string>
   <string name="chat_eta_working">Eta 正在执行……</string>
   <string name="chat_eta_working_named">%1$s 正在执行……</string>
+  <string name="chat_eta_paused_named">%1$s 已暂停，点右侧继续</string>
   <string name="chat_input_hint">交给 Eta 去完成</string>
   <string name="chat_input_hint_named">交给 %1$s 去完成</string>
   <string name="chat_stop">停止</string>
@@ -1769,6 +1776,7 @@
   <string name="remote_agents_error_host">请填写服务器地址</string>
   <string name="remote_agents_error_host_invalid">地址无效：请填 IP 或主机名（如 192.168.1.10）</string>
   <string name="remote_agents_error_port">端口无效</string>
+  <string name="remote_agents_batch_delete_message">删除已选的 %1$d 台服务器？</string>
   <string name="remote_agents_delete_title">删除服务器</string>
   <string name="remote_agents_delete_message">确定删除「%1$s」？</string>
   <string name="remote_agents_status_connected">已连接</string>
@@ -1796,6 +1804,7 @@
   <string name="recipe_state_disabled">已停用</string>
   <string name="recipe_state_root">需要 Root</string>
   <string name="recipe_steps_count">%1$d 个步骤</string>
+  <string name="recipe_disable">停用所选</string>
   <string name="recipe_enable">启用</string>
   <string name="recipe_enable_summary">启用后，这份配方会从下一轮请求起出现在模型的工具列表里</string>
   <string name="recipe_edit_one">编辑这份配方</string>
@@ -1809,6 +1818,7 @@
   <string name="recipe_description">它做什么</string>
   <string name="recipe_steps_section">步骤 · %1$d</string>
   <string name="recipe_delete_title">删除配方</string>
+  <string name="recipe_batch_delete_message">删除已选的 %1$d 个配方？删除后模型不再能调用它们，且无法撤销</string>
   <string name="recipe_delete_confirm">删除 %1$s？删除后模型不再能调用它，且无法撤销</string>
   <string name="recipe_delete_one">删除这份配方</string>
   <string name="recipe_saved">已保存 %1$s</string>
@@ -1878,6 +1888,7 @@
   <string name="mcp_tools_count">工具 · %1$d</string>
   <string name="mcp_no_tools">没有兼容工具</string>
   <string name="mcp_refresh_tools_hint">服务器发布工具后可在此刷新</string>
+  <string name="mcp_batch_delete_message">删除已选的 %1$d 台服务器？其令牌将被清除，此操作无法撤销</string>
   <string name="mcp_delete_server">删除服务器</string>
   <string name="mcp_delete_server_summary">移除此地址、Token 和工具设置</string>
   <string name="mcp_enable_risky_tool">启用这个工具？</string>
@@ -1895,13 +1906,14 @@
   <string name="data_backup_include_app_data">应用数据</string>
   <string name="data_backup_include_app_data_summary">对话、提供商、助手与记忆、技能、MCP、设置（含语音）、聊天附件与 Linux 工作区文件</string>
   <string name="data_backup_include_api_keys">包含 API Key</string>
-  <string name="data_backup_include_api_keys_summary">把提供商与豆包语音的密钥以明文写入。归档本身不加密，任何拿到这个文件的人都能用它们花你的额度。不勾则导入后重新填写</string>
+  <string name="data_backup_include_api_keys_summary">把提供商、MCP 与豆包语音的密钥以明文写入。归档本身不加密，任何拿到这个文件的人都能用它们花你的额度。不勾则导入后重新填写</string>
   <string name="data_backup_export">导出备份</string>
   <string name="data_backup_export_summary">把勾选的内容保存为 ZIP 文件</string>
   <string name="data_backup_import">导入备份</string>
   <string name="data_backup_import_summary">从备份文件恢复；纯模型备份只恢复模型，不影响对话与设置</string>
   <string name="data_backup_import_confirm_title">导入 Eta 数据？</string>
   <string name="data_backup_import_confirm_summary">备份里包含的对话、助手、提供商、技能、设置与附件会被替换。单个会话备份会合并进当前列表。若备份含完整 Linux 环境，会覆盖本机环境。文件可能包含 API Key</string>
+  <string name="data_backup_import_limits_summary">对话的压缩原文存档（context-history）不在备份内，导入后修订历史与原文回看不可用。备份恢复的媒体扫描源需要在新设备上重新授权后才能继续索引</string>
   <string name="data_backup_working">处理中……</string>
   <string name="data_backup_single_conversation_note">若备份仅包含单个会话，会合并进当前列表，不会覆盖其他数据</string>
   <string name="data_backup_transfer">导入与导出</string>
@@ -2111,6 +2123,9 @@
   <string name="tool_task_abort">中止已派发的任务</string>
   <string name="dispatch_question_waiting">等待回答：%1$s</string>
   <string name="dispatch_question_waiting_label">等待回答</string>
+  <string name="dispatch_report_body">汇报正文</string>
+  <string name="dispatch_open_conversation">打开会话</string>
+  <string name="remote_rename_unavailable">远程会话无法在此重命名，请在服务器设备上修改。</string>
   <string name="dispatch_question_waiting_badge">派发的子任务在等待回答</string>
   <string name="dispatch_control_waiting">等待手机操作权</string>
   <string name="dispatch_question_queued">排队中（第 %1$d 位）</string>
@@ -2511,6 +2526,8 @@
   <string name="sas_applied_to_conversation">已应用到本会话</string>
   <string name="sas_apply_failed">应用分组失败，请重试</string>
   <string name="dv_recording_selected">已选择录音</string>
+  <string name="dv_batch_target">%1$d 个音色</string>
+  <string name="dv_batch_removed">已移除 %1$d 条本地记录</string>
   <string name="dv_remove_title">移除“%1$s”？</string>
   <string name="dv_delete_local_note">仅移除本地记录。云端音色不会被删除，云端任务也不会取消。如果它正在用于朗读，需要重新选择音色</string>
   <string name="dv_local_removed">已移除本地记录</string>

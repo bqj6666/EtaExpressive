@@ -983,7 +983,6 @@ fun AgentAppRoot(
             onSelectFolder = { folderId -> agentState.selectFolder(folderId) },
             onRestoreConversation = { conversationId -> agentState.restoreConversationFromTrash(conversationId) },
             onConversationDeleteForever = { conversationId -> agentState.deleteConversationForever(conversationId) },
-            onEmptyTrash = { agentState.emptyTrash() },
             onOpenTrash = { pushFromDrawer(AppRoute.ConversationTrash) },
             onSelectAssistant = { id -> agentState.selectAssistant(id) },
             onEditAssistant = { id -> pushFromDrawer(AppRoute.AssistantEdit(id)) },
@@ -1476,7 +1475,6 @@ fun AgentAppRoot(
                     onDeleteConversation = { conversation ->
                         agentState.deleteConversation(conversation.id)
                     },
-                    onDeleteAll = { agentState.deleteAllConversations() },
                     onOpenSearchHistory = { pushRoute(AppRoute.MessageSearch()) },
                 )
             }
@@ -1502,7 +1500,6 @@ fun AgentAppRoot(
                     onDeleteForever = { conversationId ->
                         agentState.deleteConversationForever(conversationId)
                     },
-                    onEmptyTrash = { agentState.emptyTrash() },
                     onPurgeExpired = { agentState.purgeExpiredTrash() },
                     onOpenSearch = { pushRoute(AppRoute.ConversationTrashSearch) },
                 )
@@ -1724,6 +1721,9 @@ fun AgentAppRoot(
             }
             entry<AppRoute.WebToolsSettings>(swipeDismiss = navSwipeDismiss) {
                 WebToolsSettingsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.MijiaSettings>(swipeDismiss = navSwipeDismiss) {
+                io.github.mangi.eta.ui.screens.tools.MijiaSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.VoiceSettings>(swipeDismiss = navSwipeDismiss) {
                 io.github.mangi.eta.ui.VoiceSettingsScreen(
@@ -2109,12 +2109,12 @@ fun AgentAppRoot(
         // 语义是「归档 + 开新篇」，不是删除：说明消息会整体进回收站，可恢复接回顶部。
         EtaDialog(
             show = true,
-            title = "清空主会话",
-            summary = "当前上下文会整体移入回收站，主会话从空白继续。之后可在回收站把这段内容恢复并接回顶部。",
+            title = stringResource(R.string.clear_dispatch_console_title),
+            summary = stringResource(R.string.clear_dispatch_console_message),
             onDismissRequest = { confirmClearDispatchConsole = false },
             actions = {
                 EtaDialogActions(
-                    confirmText = "清空并归档",
+                    confirmText = stringResource(R.string.clear_dispatch_console_confirm),
                     destructive = true,
                     onCancel = { confirmClearDispatchConsole = false },
                     onConfirm = {
