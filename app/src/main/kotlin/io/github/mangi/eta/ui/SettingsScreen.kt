@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.Handyman
 import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Lan
@@ -124,6 +125,7 @@ import io.github.mangi.eta.ui.adaptive.EtaSegmentedGroupSpacing
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedItem
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedTitleSpacing
 import io.github.mangi.eta.ui.adaptive.LocalEtaSegmentedRowContainerColor
+import io.github.mangi.eta.ui.adaptive.LocalEtaSegmentedRowContentColor
 import androidx.compose.material3.Text as M3StatusText
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme as M3MaterialTheme
@@ -153,6 +155,13 @@ internal fun SettingsScreen(
     currentModelId: String? = null,
     focusKey: String? = null,
     onFocusConsumed: () -> Unit = {},
+    /**
+     * 宽屏 list-detail 左栏的持久选中行（[SettingsKeys] 锚点键）。
+     *
+     * 手机端不传，页面与原来逐字一致；宽屏传右栏当前二级页对应的行，选中态一直亮着，
+     * 三级/四级页跳转也不改变它。与 [focusKey] 的短暂高亮是两套独立状态。
+     */
+    selectedKey: String? = null,
 ) {
     // Read only attach/detach generation so idle sections rebuild observer identities.
     remember { NavPerfProbe.mark("settings-screen-body-compose"); 0 }
@@ -234,9 +243,15 @@ internal fun SettingsScreen(
         }
     }
 
-    // 强制无障碍开关状态：从系统设置返回时（ON_RESUME）刷新。
+    // 强制无障碍开关状态：组合期只读 SP 缓存（Settings.Global 的 binder 往返挪出主线程），
+    // 真值由下方 LaunchedEffect 异步回填；从系统设置返回时（ON_RESUME）再刷。
     var accessibilityProtectionEnabled by remember {
-        mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.protection.initial") { AccessibilityProtectionClient.isEnabled(context) })
+        mutableStateOf(AccessibilityProtectionClient.isEnabledCached(context))
+    }
+    LaunchedEffect(Unit) {
+        accessibilityProtectionEnabled = withContext(Dispatchers.IO) {
+            AccessibilityProtectionClient.isEnabled(context)
+        }
     }
     var accessibilityProtectionPending by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -278,10 +293,13 @@ internal fun SettingsScreen(
                     }
                     hasConnectedFramework = true
                 }
-                StreamPerformanceDiagnostics.measure("settings.prefs.reconcile") {
-                    Prefs.reconcileAgentPreferences(service)
-                }
-                coroutineScope.launch {
+                // reconcile 内部走 SP commit()（写盘 fsync）与跨进程提交，必须离开主线程：
+                // 真机 trace 实证它在转场起步帧里造成连续 D 状态与 binder 往返。
+                // ensureDefaults 同为纯 IO/suspend，随它一起挪，保持先后顺序不变。
+                coroutineScope.launch(Dispatchers.IO) {
+                    StreamPerformanceDiagnostics.measure("settings.prefs.reconcile") {
+                        Prefs.reconcileAgentPreferences(service)
+                    }
                     RuntimeConfigRepository.ensureDefaults(service)
                 }
             }
@@ -319,6 +337,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("agent"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.MODEL_PROVIDER) {
                     SettingsProviderEntry(currentProviderId, currentModelId) {
@@ -343,6 +362,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("model_features"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.CONTEXT_COMPRESSION) {
                     EtaClickableRow(
@@ -413,6 +433,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("context_extensions"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.ASSISTANTS) {
                     EtaClickableRow(
@@ -489,6 +510,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("general"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.VOICE) {
                     EtaClickableRow(
@@ -560,6 +582,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("tools"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.TOOLS) {
                     EtaClickableRow(
@@ -665,6 +688,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("runtime"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 // 入口始终可见：执行位置与虚拟屏视窗走进程内 VirtualDisplayController，
                 // 只依赖 root/LSPosed，不再要求 Magisk 后端模块；模块仅决定网页预览与副屏恢复是否可用。
@@ -699,6 +723,17 @@ internal fun SettingsScreen(
                         onClick = { onNavigate(AppRoute.Workspace) },
                     )
                 }
+
+                row(key = SettingsKeys.LIVE_ACTIVITY) {
+                    // 目录（SettingsCatalog groupRuntimeEnvironment）与宽屏锚点早已登记，
+                    // 主页行曾漏配——主页因此看不到「实时活动」入口、搜索跳转也不落行。
+                    EtaClickableRow(
+                        title = stringResource(R.string.live_activity_settings_title),
+                        summary = stringResource(R.string.live_activity_settings_summary),
+                        leading = { PreferenceIcon(Icons.Rounded.NotificationsActive) },
+                        onClick = { onNavigate(AppRoute.LiveActivitySettings) },
+                    )
+                }
             }
 
             // ── 系统助手接管 ──────────────────────────────────────────────
@@ -707,6 +742,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("system_takeover"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.SYSTEM_TAKEOVER) {
                     EtaClickableRow(
@@ -723,6 +759,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("diagnostics"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.FILE_LOGGING) {
                     SwitchPreference(
@@ -790,6 +827,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier.settingsSectionDiagnostics("permissions"),
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.PERMISSION_HEALTH) {
                     EtaClickableRow(
@@ -861,6 +899,7 @@ internal fun SettingsScreen(
                 sectionModifier = Modifier,
                 anchors = anchors,
                 highlightedKey = highlightedKey,
+                selectedKey = selectedKey,
             ) {
                 row(key = SettingsKeys.ABOUT) {
                     val versionName = remember { AppUpdateRepository.currentVersionName(context) }
@@ -1006,6 +1045,8 @@ internal fun LazyListScope.settingsGroup(
     sectionModifier: Modifier,
     anchors: SettingsAnchorIndex,
     highlightedKey: String?,
+    /** 宽屏左栏常驻选中行；null 时（含所有手机端调用方）与原来完全一致。 */
+    selectedKey: String? = null,
     content: SettingsGroupRows.() -> Unit,
 ) {
     val rows = SettingsGroupRows().apply(content).rows
@@ -1036,6 +1077,7 @@ internal fun LazyListScope.settingsGroup(
                 ) {
                     SettingsRowHighlight(
                         highlighted = row.key != null && row.key == highlightedKey,
+                        selected = row.key != null && row.key == selectedKey,
                         content = row.content,
                     )
                 }
@@ -1045,27 +1087,38 @@ internal fun LazyListScope.settingsGroup(
 }
 
 /**
- * 聚焦行的短暂高亮：搜索命中跳回主页时把这一行的容器色换成 `secondaryContainer`，
- * 高亮结束再动画回官方 `surfaceBright`。
+ * 行的容器色状态：搜索命中的短暂高亮 `secondaryContainer`、宽屏左栏的常驻选中
+ * `tertiaryContainer`（与会话抽屉侧栏选中行同一套官方令牌），其余回到 `surfaceBright`。
  *
  * 容器色只在分段行自己绘制时生效（[LocalEtaSegmentedRowContainerColor]），所以高亮
- * 与行的分段形状严丝合缝，不会在外层叠出一块异色方块。
+ * 与行的分段形状严丝合缝，不会在外层叠出一块异色方块。亮底同时通过
+ * [LocalEtaSegmentedRowContentColor] 把标题/摘要/行首图标/行尾箭头换成官方
+ * `onXxxContainer`，否则深色主题的浅色前景在 `tertiaryContainer` 上几乎看不见。
  */
 @Composable
 private fun SettingsRowHighlight(
     highlighted: Boolean,
+    selected: Boolean,
     content: @Composable () -> Unit,
 ) {
     val color by animateColorAsState(
-        targetValue = if (highlighted) {
-            M3MaterialTheme.colorScheme.secondaryContainer
-        } else {
-            M3MaterialTheme.colorScheme.surfaceBright
+        targetValue = when {
+            highlighted -> M3MaterialTheme.colorScheme.secondaryContainer
+            selected -> M3MaterialTheme.colorScheme.tertiaryContainer
+            else -> M3MaterialTheme.colorScheme.surfaceBright
         },
         label = "settings_row_highlight",
     )
+    // 容器色是动画中间色，无法反推前景色；这里显式给目标前景色，
+    // 非高亮/非选中时传 null，行内容逐字沿用官方 ListItem 令牌。
+    val contentColor = when {
+        highlighted -> M3MaterialTheme.colorScheme.onSecondaryContainer
+        selected -> M3MaterialTheme.colorScheme.onTertiaryContainer
+        else -> null
+    }
     CompositionLocalProvider(
         LocalEtaSegmentedRowContainerColor provides color,
+        LocalEtaSegmentedRowContentColor provides contentColor,
         content = content,
     )
 }
@@ -1249,8 +1302,13 @@ private fun ToolReviewTimeoutRow(title: String) {
  * 工具渐进加载（三档）：与 [ToolReviewModeRow] 同族的下拉行。
  *
  * 档位语义与工具页一致：按工具 = tools_search 命中解锁所属组；按组 = 仅
- * tools_use_group 整组打开；关闭 = 下发完整工具目录。写入 [Prefs.setToolLoadingMode]，
- * 新建会话生效（当前会话由 run 侧的会话锁保持原设置）。
+ * tools_use_group 整组打开；关闭 = 下发完整工具目录。search/group 两档下延迟组
+ * 一律经 `tool_call` 转发（高频组仍可升入会话级原生集合拿原生 schema）。写入
+ * [Prefs.setToolLoadingMode]，新建会话生效；当前会话由 run 侧的会话锁保持原设置，
+ * 直到下一次上下文压缩（见 [Prefs.unlockToolLoadingModeAtCompaction]）。
+ *
+ * 原第四档 suffix（缓存优先）已并入 search/group（转发回执 + 原生组集合对它们生效）；
+ * 存量偏好值由 [Prefs.toolLoadingMode] 的读时迁移落到 search，因此这里不会选中它。
  *
  * 行内摘要只描述当前档位及生效时机，各档位的一句话说明放在菜单项第二行。
  */
@@ -1262,25 +1320,21 @@ private fun ToolLoadingModeRow(
     val options = listOf(
         Prefs.Keys.TOOL_LOADING_MODE_SEARCH,
         Prefs.Keys.TOOL_LOADING_MODE_GROUP,
-        Prefs.Keys.TOOL_LOADING_MODE_SUFFIX,
         Prefs.Keys.TOOL_LOADING_MODE_OFF,
     )
     val labels = listOf(
         stringResource(R.string.tools_loading_mode_search),
         stringResource(R.string.tools_loading_mode_group),
-        stringResource(R.string.tools_loading_mode_suffix),
         stringResource(R.string.tools_loading_mode_off),
     )
     val effects = listOf(
         stringResource(R.string.tools_loading_mode_search_effect),
         stringResource(R.string.tools_loading_mode_group_effect),
-        stringResource(R.string.tools_loading_mode_suffix_effect),
         stringResource(R.string.tools_loading_mode_off_effect),
     )
     val hints = listOf(
         stringResource(R.string.tools_loading_mode_search_hint),
         stringResource(R.string.tools_loading_mode_group_hint),
-        stringResource(R.string.tools_loading_mode_suffix_hint),
         stringResource(R.string.tools_loading_mode_off_hint),
     )
     val selectedIndex = options.indexOf(mode).coerceAtLeast(0)

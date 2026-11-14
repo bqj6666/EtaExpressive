@@ -216,15 +216,47 @@ class AnthropicPromptCachingTest {
         assertEquals(2, markerCount(body))
     }
 
-    @Test fun assistantAndThinkingOrEmptyFinalBlocksAreNotMarked() {
-        val body = JSONObject().put("messages", JSONArray().put(JSONObject().put("role", "user")
+    @Test fun thinkingOrEmptyFinalBlocksAreNeverMarkedButAssistantPrefillIsMarked() {
+        // thinking/空文本块本身永远不打 cache_control：从后往前找不到可缓存块时一个断点都不加。
+        val thinkingOnly = JSONObject().put("messages", JSONArray().put(JSONObject().put("role", "user")
             .put("content", JSONArray().put(JSONObject().put("type", "thinking").put("thinking", "private")))))
-        AnthropicPromptCaching.applyDefaults(body)
-        assertEquals(0, markerCount(body))
-        val assistant = build(JSONArray().put(msg("user", "hello")).put(msg("assistant", "prefill")))
-        assertEquals(0, markerCount(assistant))
+        AnthropicPromptCaching.applyDefaults(thinkingOnly)
+        assertEquals(0, markerCount(thinkingOnly))
         val empty = build(JSONArray().put(msg("user", "")))
         assertEquals(0, markerCount(empty))
+        // 末位断点不区分角色：一轮通常以 assistant 结尾，prefill 文本也要在缓存链上。
+        val assistant = build(JSONArray().put(msg("user", "hello")).put(msg("assistant", "prefill")))
+        val prefill = assistant.getJSONArray("messages").getJSONObject(1).getJSONArray("content")
+        assertEquals("ephemeral", control(prefill.getJSONObject(0)).getString("type"))
+        // thinking 收尾时不能直接放弃：回溯到最近的可缓存块（text）打标，thinking 不吃标记。
+        val trailingThinking = JSONObject().put("messages", JSONArray().put(JSONObject().put("role", "assistant")
+            .put("content", JSONArray()
+                .put(JSONObject().put("type", "text").put("text", "answer"))
+                .put(JSONObject().put("type", "thinking").put("thinking", "private")))))
+        AnthropicPromptCaching.applyDefaults(trailingThinking)
+        val blocks = trailingThinking.getJSONArray("messages").getJSONObject(0).getJSONArray("content")
+        assertEquals("ephemeral", control(blocks.getJSONObject(0)).getString("type"))
+        assertFalse(blocks.getJSONObject(1).has("cache_control"))
+    }
+
+    @Test fun assistantFinalRoundKeepsFourDistinctBreakpoints() {
+        // 一轮通常以 assistant 收尾。末位断点若只认 user，本轮最终内容就永远不在缓存链上，
+        // 下一轮第一个请求只能从头重写——这里钉住「四个断点仍然齐、且末位落在 assistant 上」。
+        val messages = JSONArray()
+            .put(msg("system", "stable instructions").put(AnthropicPromptCaching.SYSTEM_BOUNDARY_KEY, true))
+            .put(msg("system", "memory revision 1"))
+            .put(msg("user", "hello"))
+            .put(msg("assistant", "answer"))
+        val body = build(messages, JSONArray().put(tool("first")).put(tool("last")))
+        assertEquals(4, markerCount(body))
+        assertTrue(body.getJSONArray("tools").getJSONObject(1).has("cache_control"))
+        assertTrue(body.getJSONArray("system").getJSONObject(0).has("cache_control"))
+        assertTrue(body.getJSONArray("system").getJSONObject(1).has("cache_control"))
+        val finalBlock = body.getJSONArray("messages").getJSONObject(1).getJSONArray("content").getJSONObject(0)
+        assertEquals("answer", finalBlock.getString("text"))
+        assertTrue(finalBlock.has("cache_control"))
+        assertFalse(body.getJSONArray("messages").getJSONObject(0).getJSONArray("content")
+            .getJSONObject(0).has("cache_control"))
     }
 
     @Test fun applyingDefaultsTwiceIsIdempotent() {

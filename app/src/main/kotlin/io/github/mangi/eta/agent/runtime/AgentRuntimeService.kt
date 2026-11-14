@@ -45,6 +45,8 @@ import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.dispatch.AgentDispatchCoordinator
 import io.github.mangi.eta.agent.dispatch.AgentDispatchPayload
 import io.github.mangi.eta.agent.dispatch.AgentDispatchRuntime
+import io.github.mangi.eta.agent.device.AgentTaskSurface
+import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.device.OwnerDisplayPresence
 import io.github.mangi.eta.agent.device.VirtualDisplaySession
@@ -70,6 +72,8 @@ import io.github.mangi.eta.agent.overlay.CapsuleFlingPlan
 import io.github.mangi.eta.agent.overlay.applyControlledEvent
 import io.github.mangi.eta.agent.overlay.applyEvent
 import io.github.mangi.eta.agent.xiaomi.XiaomiToolsBridgeProtocol
+import io.github.mangi.eta.data.model.AssistantPrompt
+import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayController
 import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot
 import io.github.mangi.eta.agent.virtualdisplay.VirtualTouchEffect
@@ -860,7 +864,35 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
     }
 
+    /**
+     * 派发 run 的执行位置豁免：全局「每次询问」档下不弹窗——派发是后台干活，弹系统级
+     * 前台/后台选择框会阻塞工具线程 ≤90s（AgentTaskPrompt.await）、不说明是哪个会话在问、
+     * 调度台也收不到任何信号。副屏可用（AGENT_VIRTUAL_DISPLAY_ENABLED，与 executor 的
+     * GUI 工具准入同一开关）时直接落到后台副屏：GUI 操作在虚拟屏上完成，不碰真实屏幕；
+     * 副屏不可用（无 root/模块或开关关闭）保持 ASK——弹窗仍是非 root 设备的既有 UX。
+     * 前台/后台档原样继承；非派发 run 不受影响。
+     */
+    private fun resolveRunTaskSurface(request: AgentRuntimeWire.RunRequest): AgentTaskSurfaceMode {
+        val stored = runCatching { AgentTaskSurface.stored() }.getOrDefault(AgentTaskSurfaceMode.FOREGROUND)
+        if (request.handoff?.source != AgentRuntimeWire.ETA_DISPATCH_HANDOFF_SOURCE ||
+            stored != AgentTaskSurfaceMode.ASK
+        ) {
+            return stored
+        }
+        return if (currentRuntimePermissions().virtualDisplay) {
+            AgentTaskSurfaceMode.BACKGROUND
+        } else {
+            AgentTaskSurfaceMode.ASK
+        }
+    }
+
     private fun startRun(
+        incoming: AgentRuntimeWire.RunRequest,
+        replyTo: Messenger? = null,
+    ) = startRunPrepared(incoming.withPlainAssistantForExternalEntry(), replyTo)
+
+    /** 实际起跑：入参已按入口归一化（见 [AgentRuntimeWire.RunRequest.withPlainAssistantForExternalEntry]）。 */
+    private fun startRunPrepared(
         request: AgentRuntimeWire.RunRequest,
         replyTo: Messenger? = null,
     ) {
@@ -869,6 +901,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         lateinit var newSession: AgentRuntimeSession
         newSession = AgentRuntimeSession(
             runId = request.runId,
+            // 派发 run 豁免「每次询问」：后台干活不该弹全局弹窗问执行位置（弹窗不说是谁在
+            // 问，还会阻塞工具线程 ≤90s 且调度台零信号）。见 [resolveRunTaskSurface]。
+            taskSurfaceMode = resolveRunTaskSurface(request),
             questionLedger = questionLedger,
             terminalWork = { action ->
                 if (Looper.myLooper() == Looper.getMainLooper()) thread(name = "eta-question-seal", block = action)
@@ -1110,6 +1145,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         // 操作权状态与悬浮窗策略无关，先于叠加层早退分支登记，供 run 快照读取。
         if (event is AgentEvent.GuiControlChanged) {
             runs.get(session.runId)?.guiStatus = event.status
+            // 派发 run 的操作权等待同步到调度台（非派发 run 在账本里静默忽略）：
+            // 并发 GUI 时派发 run 可能无限期排队，这是提问管线之外第二个看不见的等待。
+            dispatchCoordinator.onChildGuiControl(session.runId, event.status)
         }
         // 子会话提问同步到调度台：仅派发 run（协调器按账本武装债权判定，非派发 run 返回
         // null 静默）。横幅只在后台提醒（前台静默），返回早退分支不影响这里——提问通知
@@ -2607,6 +2645,39 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         AgentRuntimePolicy.permissions(
             Prefs.localAgentPreferences()
         )
+
+    /**
+     * 外部入口（系统语音助手浮窗 / 超级小爱 / Breeno）一律以「普通助理」身份运行，
+     * 不继承全局活动助手里的调度台。
+     *
+     * 小爱与 Breeno 的 config 来自 `AgentModelClient.loadConfig()` 的全局快照——那是主界面
+     * 最后一次同步时写下的，用户当时若停在调度台会话，快照的 systemPrompt 与 assistantId
+     * 就都是调度台；语音浮窗虽已在入口侧回落，但快照路径必须在这里兜住。
+     * 归一化同时改三处：`config.systemPrompt` 决定模型看到的纪律提示词，
+     * `config.assistantId` / `request.assistantId` 决定 `AgentRuntimeRunExecutor` 是否下发
+     * 派发工具、以及记忆与技能按哪个助手装载。
+     *
+     * 硬边界：主界面（agent_ui，调度台本体）与调度台派发（eta_dispatch）不归一化；
+     * 已经是非调度台身份的请求原样返回，不触碰用户自定义助手与其人格设定。
+     */
+    private fun AgentRuntimeWire.RunRequest.withPlainAssistantForExternalEntry(): AgentRuntimeWire.RunRequest {
+        val source = handoff?.source ?: return this
+        if (source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE ||
+            source == AgentRuntimeWire.ETA_DISPATCH_HANDOFF_SOURCE
+        ) return this
+        if (assistantId != AssistantPrompt.DISPATCHER_ID &&
+            config.assistantId != AssistantPrompt.DISPATCHER_ID
+        ) return this
+        val plain = AssistantRepository.currentProfile(AssistantRepository.plainActiveId())
+            ?: AssistantRepository.plainActive()
+        return copy(
+            assistantId = plain.id,
+            config = config.copy(
+                assistantId = plain.id,
+                systemPrompt = AssistantPrompt.build(plain.name, plain.prompt),
+            ),
+        )
+    }
 
     private fun AgentRuntimeWire.RunRequest.withActiveSupplements(): AgentRuntimeWire.RunRequest {
         val handoff = handoff ?: return this

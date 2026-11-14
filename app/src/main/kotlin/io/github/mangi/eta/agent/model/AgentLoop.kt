@@ -45,7 +45,12 @@ internal class AgentLoop(
     private val toolDiagnostics: AgentToolCallDiagnostics = AgentToolCallDiagnostics(),
     /** 会话上一张可信云端回执折算到本次请求的输入量；只作为第一个锚点，本轮回执到达后被替换。 */
     private val calibratedInputTokens: Int? = null,
-    private val onHistoryCompacted: () -> Unit = {},
+    /**
+     * 历史被改写的回调。[pruningOnly] 区分两种改写：修剪只替换超长工具结果体（敏感结果跳过），
+     * 摘要压缩会把保留尾之外的回执连正文一起替换。回调方据此决定哪些「挂在使用回执上的
+     * 前缀外内容」需要回到 system（见 AgentModelClient 的结果解读规则）。
+     */
+    private val onHistoryCompacted: (pruningOnly: Boolean) -> Unit = {},
     private val onHistorySnapshot: ((Int, List<AgentModelClient.ConversationMessage>) -> String)? = null,
     private val compactHistory: ((
         List<AgentModelClient.ConversationMessage>,
@@ -58,6 +63,14 @@ internal class AgentLoop(
      * 与静态组同走 [AgentToolGroups.deferredGroupsOf]。
      */
     private val dynamicToolGroupsProvider: () -> List<AgentToolGroup> = { emptyList() },
+    /**
+     * 允许的模型请求轮数上限，仅「目标单一的快捷任务」设置。
+     *
+     * 达到上限后不清空历史、不直接抛错，而是把本轮目录置空：模型只能输出最终正文，
+     * 循环按自然结束收口。这样既不会丢掉已写入的工具结果，也不会让快捷任务在
+     * 「再查一次 / 再试一次」上无限往返。Int.MAX_VALUE = 保持原有的无界循环。
+     */
+    private val maxRounds: Int = Int.MAX_VALUE,
 ) {
     data class CompactPolicy(
         val enabled: Boolean,
@@ -364,7 +377,10 @@ internal class AgentLoop(
             runController.throwIfCancelled()
             postToolReconnect?.check()
             appendPendingSteeringMessage()
-            selectRoundTools(toolsForRound?.invoke(round) ?: tools)
+            // 快捷任务超轮次：撤掉工具目录，逼模型用已有回执直接给出最终答复。
+            selectRoundTools(
+                if (round > maxRounds) JSONArray() else (toolsForRound?.invoke(round) ?: tools)
+            )
             try {
                 auxiliaryRound = round
                 auxiliaryVision.prepare(messages)
@@ -1227,7 +1243,8 @@ internal class AgentLoop(
         // A tool-body edit is not a new context epoch. Keep the latest cloud bill
         // and its local anchor; the silent budget accounts for the trimmed delta.
         // Only a real summary replacement reopens the local display boundary.
-        onHistoryCompacted()
+        // 函数类型不能用具名实参：true = 仅修剪（见 onHistoryCompacted 的 KDoc）。
+        onHistoryCompacted(true)
         onEvent(AgentEvent.ContextCompacted(round, true, messages.length(), messages.length(),
             history = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds),
             compressorLabel = AgentEvent.PRUNING_ONLY_COMPRESSOR_LABEL, pruningOnly = true))
@@ -1350,7 +1367,7 @@ internal class AgentLoop(
         unmeasuredContextSendAllowed = true
         autoCompactLatched = false
         compactionFailure = ""
-        onHistoryCompacted()
+        onHistoryCompacted(false)
         onEvent(AgentEvent.ContextCompacted(round, true, originalCount, messages.length(),
             history = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds),
             compressorLabel = compressorLabel(compressConfig)))

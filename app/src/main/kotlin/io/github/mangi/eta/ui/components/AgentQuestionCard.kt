@@ -15,6 +15,8 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -59,17 +61,21 @@ private val DANGEROUS_CONFIRM_OPTION_IDS = setOf("confirm_once", "confirm_sessio
  * Draft and submission state stay in the conversation store. Only whole-card disclosure
  * is local; the form itself is never folded in parts.
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun AgentQuestionCard(
     message: AgentQuestionMessageUi,
     modifier: Modifier = Modifier,
     position: SegmentedRowPosition = SegmentedRowPosition.Whole,
+    /** 上/下沿与相邻卡片行按组缝相接：对应沿取内圆（外距由调用方 padding 负责）。 */
+    seamAboveCard: Boolean = false,
+    seamBelowCard: Boolean = false,
     onDraftChanged: (AgentQuestionAnswer) -> Unit,
     onSubmit: () -> Unit,
 ) {
     // A recycled chat slot must not inherit another conversation/run/call/question's controls.
     key(AgentQuestionProjection.messageId(message.request)) {
-        AgentQuestionCardContent(message, modifier, position, onDraftChanged, onSubmit)
+        AgentQuestionCardContent(message, modifier, position, seamAboveCard, seamBelowCard, onDraftChanged, onSubmit)
     }
 }
 
@@ -78,6 +84,8 @@ private fun AgentQuestionCardContent(
     message: AgentQuestionMessageUi,
     modifier: Modifier,
     position: SegmentedRowPosition,
+    seamAboveCard: Boolean,
+    seamBelowCard: Boolean,
     onDraftChanged: (AgentQuestionAnswer) -> Unit,
     onSubmit: () -> Unit,
 ) {
@@ -148,8 +156,13 @@ private fun AgentQuestionCardContent(
                 }
                 // M3 Expressive：官方 Button 的默认形状、容器高度、内边距、
                 // primary / onPrimary 与禁用态颜色全部交给官方默认值。
-                Button(onClick = { if (editable && valid) onSubmit() },
-                    enabled = editable && valid, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { if (editable && valid) onSubmit() },
+                    enabled = editable && valid,
+                    modifier = Modifier.fillMaxWidth(),
+                    // 容器型按钮直用必须传官方 shapes（AGENTS §2.5 按压 morph）。
+                    shapes = ButtonDefaults.shapes(),
+                ) {
                     Text(stringResource(if (message.submitting) R.string.question_submitting else R.string.question_submit))
                 }
             }
@@ -187,6 +200,8 @@ private fun AgentQuestionCardContent(
         details = questionDetails,
         modifier = modifier.testTag("question-card-surface"),
         position = position,
+        seamAboveCard = seamAboveCard,
+        seamBelowCard = seamBelowCard,
     )
 }
 

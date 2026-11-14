@@ -33,7 +33,8 @@ internal object AgentPromptBuilder {
         openedToolGroups: Set<String> = emptySet(),
         /** 缓存优先档：延迟组工具经 tool_call 调用，组索引的说明随之改写。 */
         groupCallsViaToolCall: Boolean = false,
-        delegationEngaged: Boolean = false,
+        /** 结果解读规则是否常驻系统前缀；见 [buildSystemMessages]。 */
+        delegationResultRuleInPrefix: Boolean = false,
         /**
          * 本轮目录里真实存在的工具名。
          *
@@ -56,6 +57,8 @@ internal object AgentPromptBuilder {
          * 已打开组的指引块仍按实际目录下发。
          */
         openableGroupLimit: Set<String>? = null,
+        /** 决策闲聊态逃生通道；见 [buildSystemMessages]。 */
+        groupDiscoveryUnrestricted: Boolean = false,
         /** 动态延迟组（MCP server）；见 [buildSystemMessages]。 */
         dynamicToolGroups: List<AgentToolGroup> = emptyList(),
         /**
@@ -65,6 +68,8 @@ internal object AgentPromptBuilder {
         presetRunAt: Instant? = null,
         /** 唤起即屏幕上下文（助手弹窗 run）：true 时注入 observe_screen 首轮规则（见 buildSystemMessages）。 */
         screenObservationRule: Boolean = false,
+        /** 「添加日程」快速路径：用一条专用短系统约束替换全部常驻规则。 */
+        calendarFastTask: Boolean = false,
     ): JSONArray {
         val messages = buildSystemMessages(
             config, skillContext, memoryContext, rootAvailable, delegationAvailable, shellTools,
@@ -72,13 +77,15 @@ internal object AgentPromptBuilder {
             openedToolGroups = openedToolGroups,
             groupCallsViaToolCall = groupCallsViaToolCall,
             disabledCapabilities = disabledCapabilities,
-            delegationEngaged = delegationEngaged,
+            delegationResultRuleInPrefix = delegationResultRuleInPrefix,
             callableTools = callableTools,
             trimChatSections = trimChatSections,
             openableGroupLimit = openableGroupLimit,
+            groupDiscoveryUnrestricted = groupDiscoveryUnrestricted,
             dynamicToolGroups = dynamicToolGroups,
             presetRunAt = presetRunAt,
             screenObservationRule = screenObservationRule,
+            calendarFastTask = calendarFastTask,
         )
         onSystemCount(messages.length())
         appendHistoryForModel(history, messages)
@@ -173,10 +180,36 @@ internal object AgentPromptBuilder {
         val offset = local.offset.id.let { if (it == "Z") "UTC" else "UTC$it" }
         val weekday = local.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.SIMPLIFIED_CHINESE)
         return "当前时间（本次请求发起时刻）：$dateTime（$offset），时区 ${local.zone.id}，$weekday。\n" +
-            "用户说的“今天/明天/后天/周五/下周一下午三点”等相对时间，一律按这一刻的本地时间换算成具体日期与时刻。\n" +
+            "用户**指令里**说的“今天/明天/后天/周五/下周一下午三点”等相对时间，按这一刻的本地时间换算成具体日期与时刻；" +
+            "用户指令引用的截图、聊天记录、通知或原文里出现的日期与时刻按原文理解，不要用当前年份去补，也不要把它换算成未来日期。" +
+            "日期缺少年份、明显早于当前时间，或属于示例、条件句、填表说明时，不要写成日程，在回复里说明跳过原因。\n" +
             "日程工具的时间参数使用 YYYY-MM-DDTHH:MM（设备本地时间，秒可省略；只写 YYYY-MM-DD 表示全天日程）；" +
             "省略 end 时默认 start 后 1 小时（全天日程为 1 天），按标题定位事件的 match_date 用 YYYY-MM-DD。\n" +
-            "本轮已直接给出当前时间：不要调用 get_current_context 或其它取时工具，直接按上面的时间换算并调用日程工具。"
+            "本轮已直接给出当前时间：无需再调用 get_current_context 或其它取时工具；没有可写入的日程时直接说明，不要勉强调用写入工具。"
+    }
+
+    /**
+     * 「添加日程」快速路径的**唯一**系统约束。
+     *
+     * 常规提示有几十条互相制衡的规则（主动推进 / 不猜测关键参数 / 合理推断不追问 / 立即调用工具），
+     * 对「识别历史截图并写日历」这类任务会互相打架，模型把整轮时间花在给规则做仲裁上。
+     * 快捷功能的目标在点击时就已确定，所以这里用一条自洽的短规则整体替换常驻段：
+     * 时间口径、抽取边界、失败口径三个容易反刍的决策一次讲死，并把「没有日程就不调用工具」
+     * 明确写成合法结果。
+     */
+    private fun calendarFastTaskRule(instant: Instant): String {
+        val local = instant.atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.MINUTES)
+        val dateTime = local.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm", Locale.ROOT))
+        val offset = local.offset.id.let { if (it == "Z") "UTC" else "UTC$it" }
+        val weekday = local.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.SIMPLIFIED_CHINESE)
+        return "当前时间：$dateTime（$offset），时区 ${local.zone.id}，$weekday。这是一次「把截图或指令里的事项添加到系统日历」的快捷任务，只做抽取与一次批量写入。\n" +
+            "时间：指令里的“今天/明天/后天/周X/下周X”按上面的当前时间换算；截图、聊天记录、通知等引用内容里的日期按原文理解，" +
+            "不要套用当前年份，也不要把已过去的日期改写成未来日期。缺年份、明显已过去、无法唯一定下来的条目直接跳过，不猜、不追问、不编造。\n" +
+            "抽取：只取真实发生或明确要求用户办理的事项；填表说明、举例、条件句（“如果…则填…”）、别人的时间安排都不算用户日程。\n" +
+            "执行：把所有有效条目一次性放进 create_calendar_events 的 events 数组，只调用一次；start/end 用 YYYY-MM-DDTHH:MM（设备本地时间），" +
+            "只写 YYYY-MM-DD 表示全天，省略 end 默认 1 小时。没有有效条目时不要调用任何工具，直接回复截图里没有可添加的日程并说明看到了什么。\n" +
+            "回执：ok=true 才逐条说明创建了什么；ok=false 时如实说明失败原因与已创建项，不要原样重试整批，必要时才用 search_calendar_events 核对。\n" +
+            "不要输出计划、推理过程或中间说明，不要调用取时、屏幕、搜索等其它工具。最终回复用用户的语言，一到两句话。"
     }
 
     fun buildSystemMessages(
@@ -193,10 +226,13 @@ internal object AgentPromptBuilder {
         /** 决定「关闭说明」内容；默认从 config 与既有开关推导，与目录同源。 */
         disabledCapabilities: AgentToolGroups.ToolSwitchState? = null,
         /**
-         * 本 run 是否已经真的派出过子任务。派发之前，[DELEGATION_RESULT_RULE] 一条都执行不到，
-         * 因此不常驻；派发后的下一轮起才进入前缀（与延迟工具组同一个「按需付费」思路）。
+         * [DELEGATION_RESULT_RULE] 是否常驻系统前缀。
+         *
+         * 默认 false：本 run 首次派发时规则随 `delegate_task` 回执下发，落在历史尾部（＝后缀），
+         * 前缀字节不随派发变化。只有回执拿不到规则的两种情况才置 true——续跑（持久历史里的
+         * 回执正文已脱敏）与压缩后（回执被摘要替换）；两者都发生在缓存尚未建立或已作废的时刻。
          */
-        delegationEngaged: Boolean = false,
+        delegationResultRuleInPrefix: Boolean = false,
         /**
          * 本轮目录里真实存在的工具名；见 [buildInitialMessages]。
          * 缺席的工具连名字都不出现在提示里：模型照着提示调用一个没下发的工具会被拒，
@@ -208,6 +244,16 @@ internal object AgentPromptBuilder {
         /** 决策收窄后的可打开组上限；null 不限制。 */
         openableGroupLimit: Set<String>? = null,
         /**
+         * 决策闲聊态（chatOnly）逃生通道：true 时组索引不随 trimChatSections 被裁掉，
+         * 并附「本轮未预载组但可自行打开」的说明。
+         *
+         * 没有这条通道时（2026-11-14 日志取证）：判断模型把「运行一个空程序」判成闲聊 →
+         * 组索引被裁 → 模型看不到终端组存在 → 只能谎称「我没有终端工具」。闲聊关段的
+         * 本意是省注意力，不是剥夺工具发现能力——索引只有几百 token，且 chatOnly 轮的
+         * 前缀本就因关段而不同，不额外伤缓存。
+         */
+        groupDiscoveryUnrestricted: Boolean = false,
+        /**
          * 动态延迟组（MCP server）：与静态组共用同一份可用性判定与索引，
          * 成员由各 run 的 MCP 快照决定。索引列出未打开的 server，模型可
          * tools_use_group 打开或 tools_search 命中后自动解锁。
@@ -217,6 +263,12 @@ internal object AgentPromptBuilder {
         presetRunAt: Instant? = null,
         /** 唤起即屏幕上下文（助手弹窗 run）；见 [buildInitialMessages]。 */
         screenObservationRule: Boolean = false,
+        /**
+         * 「添加日程」快速路径：为 true 时只下发人格 + [calendarFastTaskRule] 并直接返回，
+         * 跳过所有常驻策略、组索引与被关闭能力说明。快捷任务的目录已收窄，这些段落既用不上，
+         * 又会与专用规则冲突；更短的 system 前缀也直接降低首字延迟。
+         */
+        calendarFastTask: Boolean = false,
     ): JSONArray {
         val environmentRule = if (shellTools != null) {
             "environment 按下方本机命令检测选择"
@@ -243,7 +295,9 @@ internal object AgentPromptBuilder {
             }
         }
         val availability = AgentToolGroups.availability(openedToolGroups, dynamicToolGroups, gate).let { full ->
-            if (openableGroupLimit == null) {
+            // 闲聊逃生态：索引按 gate 全集渲染（与 AgentToolCatalog 的 groupDiscoveryUnrestricted
+            // 同源），决策收窄不再过滤——模型必须能看到「终端组存在且可打开」。
+            if (groupDiscoveryUnrestricted || openableGroupLimit == null) {
                 full
             } else {
                 // 决策收窄：索引不能宣传一个 gate 允许、但被判断模型排除的组。
@@ -286,6 +340,11 @@ internal object AgentPromptBuilder {
         if (config.systemPrompt.isNotBlank()) {
             messages.put(systemMessage(config.systemPrompt))
         }
+        // 日程快速路径：人格 + 一条自洽的短规则即为全部系统约束，提前收口。
+        if (calendarFastTask) {
+            messages.put(systemMessage(calendarFastTaskRule(presetRunAt ?: Instant.now())))
+            return messages
+        }
         // 语音「创建屏幕日程」预设：直接把请求发起时刻的真实系统时间写进提示，
         // 模型可一步换算相对日期并调用创建工具，省掉「先取时间」的一次往返。
         presetRunAt?.let { messages.put(systemMessage(presetRunAtRule(it))) }
@@ -294,9 +353,9 @@ internal object AgentPromptBuilder {
         if (screenObservationRule) {
             messages.put(systemMessage(screenObservationRuleText()))
         }
-        if (!pureChat && delegationAvailable && (!trimChatSections || delegationEngaged)) {
+        if (!pureChat && delegationAvailable && (!trimChatSections || delegationResultRuleInPrefix)) {
             messages.put(systemMessage(delegationRule(::named)))
-            if (delegationEngaged) messages.put(systemMessage(DELEGATION_RESULT_RULE))
+            if (delegationResultRuleInPrefix) messages.put(systemMessage(DELEGATION_RESULT_RULE))
         }
         if (pureChat) {
             messages.put(
@@ -613,9 +672,26 @@ internal object AgentPromptBuilder {
         // [availability] 与上面各段指引用的是同一份判定，也与 AgentToolCatalog.build 同源：
         // 索引宣传一个「能打开」的组，打开后下一轮却拿不到工具，是最糟的体验
         // （模型白花一轮且被反复误导）。入口收窄、子代理最小配置都走这条路径。
-        if (!trimChatSections && !pureChat) {
-            AgentToolGroups.indexMessage(availability, dynamicToolGroups, groupCallsViaToolCall)?.let { index ->
-                messages.put(systemMessage(index))
+        //
+        // 闲聊逃生态例外（groupDiscoveryUnrestricted）：trimChatSections 只省技能/记忆/委派段，
+        // 组索引必须保留——它是模型在闲聊误判后发现自己有终端、浏览器等能力的唯一线索。
+        if (!trimChatSections || groupDiscoveryUnrestricted) {
+            if (!pureChat) {
+                AgentToolGroups.indexMessage(availability, dynamicToolGroups, groupCallsViaToolCall)?.let { index ->
+                    messages.put(
+                        systemMessage(
+                            if (groupDiscoveryUnrestricted) {
+                                index +
+                                    "\n本次运行被判断为无需工具，因此没有预载任何组；" +
+                                    "但以上组都可以由你直接打开。若用户请求实际需要其中某个能力" +
+                                    "（例如执行命令、读文件），先用 tools_use_group 打开对应组，" +
+                                    "不要声称自己不具备该能力——用户并未关闭这些功能。"
+                            } else {
+                                index
+                            },
+                        ),
+                    )
+                }
             }
         }
 
@@ -759,10 +835,13 @@ internal object AgentPromptBuilder {
 
     /**
      * 派发之后才用得上的结果解读规则：后台继续语义、get_task_result 分页、completed 的验收要求、
-     * 各类错误码。它们约占委派规则的一半 token，而在第一次 delegate_task 之前一条都执行不到，
-     * 因此和延迟工具组同一个思路——本 run 真的派发过再进系统前缀（见 [buildSystemMessages]）。
+     * 各类错误码。它们约占委派规则的一半 token，而在第一次 delegate_task 之前一条都执行不到。
+     *
+     * 因此不常驻系统前缀：本 run 首次派发时由 [AgentModelClient] 挂到 `delegate_task` 回执上，
+     * 落在历史尾部（＝后缀），派发不再重写整段 prompt 缓存。只有回执拿不到它的时候
+     * （续跑的脱敏历史、压缩后的摘要）才经 [buildSystemMessages] 放回前缀。
      */
-    private const val DELEGATION_RESULT_RULE =
+    internal const val DELEGATION_RESULT_RULE =
         "已经派出的子代理适用以下结果规则。" +
             "主代理正常输出最终答复并结束本轮后，已经派出的子任务默认继续在后台执行；正常完成本轮不会因此暂停、停止或取消子任务。" +
             "此规则不改变显式暂停、停止、取消及失败的既有处理，也不会自动恢复此前已经暂停的任务。无需仅为保持子任务运行而等待所有结果或持续轮询。" +

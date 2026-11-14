@@ -19,7 +19,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -89,7 +88,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -97,7 +95,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -113,7 +110,6 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.AgentConversationMessages
 import io.github.mangi.eta.ui.components.ChatImagePreviewHost
 import io.github.mangi.eta.ui.components.ChatInputPopupMargin
-import io.github.mangi.eta.ui.components.ChatSendSettleSpec
 import io.github.mangi.eta.ui.components.ComposerVoiceEntry
 import io.github.mangi.eta.ui.components.Material3ComposerBody
 import io.github.mangi.eta.ui.components.PendingFileReferenceStrip
@@ -122,7 +118,7 @@ import io.github.mangi.eta.ui.components.collectPreviewableChatImages
 import io.github.mangi.eta.ui.components.horizontalScrollEdgeFade
 import io.github.mangi.eta.ui.components.rememberDataUrlBitmap
 import io.github.mangi.eta.ui.components.rememberImeVisible
-import io.github.mangi.eta.ui.components.settleListToBottom
+import io.github.mangi.eta.ui.components.settleListToBottomAfterSubmit
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ConversationMentionInputUi
@@ -269,12 +265,6 @@ private const val AssistantExitDurationMillis = 220
 /** 半屏档继续下拉超过该距离即关闭浮层（下拉关闭阈值）。 */
 private val AssistantDismissThreshold = 92.dp
 
-/** 全屏档继续上拉超过该距离即把对话交接回主程序（交接阈值）。 */
-private val AssistantHandoffThreshold = 72.dp
-
-/** 列表上滑时第二段交接的阈值（pre-scroll 阶段整段消费）。 */
-private val AssistantDirectHandoffThreshold = 48.dp
-
 /** 甩动速度阈值：快速下滑关闭、快速上滑展开，超过即按惯性翻档。 */
 private val AssistantFlingVelocity = 900.dp
 
@@ -288,6 +278,28 @@ private val AssistantInputBackdropHeight = 104.dp
 /** 渐变压暗在输入区实测高度之上再多出一小截，让顶端透明段落在输入框上方可见。 */
 private val AssistantInputBackdropExtraHeight = 16.dp
 
+// ── 屏幕上下文预览卡的几何 ──
+//
+// 同心圆角：外层卡片圆角 = 内层图片圆角 + 两层间距（EtaDimens 的圆角同心规则）。
+// 四个几何值互相派生，避免「改了卡片高却忘了改图」或两个 4dp 各自漂移。
+
+/** 预览卡总高。 */
+private val ScreenContextPreviewCardHeight = 60.dp
+
+/** 卡片内边距，同时是内外圆角的差值。 */
+private val ScreenContextPreviewInset = 4.dp
+
+/** 卡片容器圆角（15dp）：非分段列表 / 按钮组那两档，属聊天域卡片自有值，就近命名。 */
+private val ScreenContextPreviewCardCorner = 15.dp
+
+/** 内层图片边长：横纵都内缩一个内边距，四段弧线才与卡片同圆心。 */
+private val ScreenContextPreviewImageSize =
+    ScreenContextPreviewCardHeight - ScreenContextPreviewInset * 2
+
+/** 内层图片圆角 = 卡片圆角 − 内边距，弧心与卡片圆角圆心重合。 */
+private val ScreenContextPreviewImageCorner =
+    ScreenContextPreviewCardCorner - ScreenContextPreviewInset
+
 @Composable
 internal fun EtaVoicePanel(
     state: EtaVoiceUiState,
@@ -295,7 +307,6 @@ internal fun EtaVoicePanel(
     composer: EtaAssistantComposerState,
     voiceState: VoiceModeState,
     inputFocusRequestKey: Int,
-    canOpenConversation: Boolean,
     exitRequested: Boolean,
     composerConversationId: String?,
     onStartVoiceMode: (VoiceEntryMode) -> Unit,
@@ -311,7 +322,6 @@ internal fun EtaVoicePanel(
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
-    onOpenConversation: () -> Unit,
     onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit,
     onSubmitQuestionAnswer: (String, String) -> Unit,
 ) {
@@ -459,7 +469,6 @@ internal fun EtaVoicePanel(
                     dictationStartRequest = dictationStartRequest,
                     onSystemPickerLaunch = onSystemPickerLaunch,
                     focusRequester = focusRequester,
-                    canOpenConversation = canOpenConversation,
                     maxContentHeightPx = maxContentHeightPx,
                     bottomInsetPx = bottomInset,
                     imeOverlapPx = imeOverlap,
@@ -475,7 +484,6 @@ internal fun EtaVoicePanel(
                     },
                     onStop = onStop,
                     onClose = onClose,
-                    onOpenConversation = onOpenConversation,
                     onQuestionDraftChanged = onQuestionDraftChanged,
                     onSubmitQuestionAnswer = onSubmitQuestionAnswer,
                 )
@@ -525,7 +533,6 @@ private fun BoxScope.AssistantPanel(
     dictationStartRequest: Int,
     onSystemPickerLaunch: () -> Unit,
     focusRequester: FocusRequester,
-    canOpenConversation: Boolean,
     maxContentHeightPx: Float,
     bottomInsetPx: Int,
     imeOverlapPx: Int,
@@ -538,12 +545,10 @@ private fun BoxScope.AssistantPanel(
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
-    onOpenConversation: () -> Unit,
     onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit,
     onSubmitQuestionAnswer: (String, String) -> Unit,
 ) {
     val density = LocalDensity.current
-    val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     // 两档高度：半屏 / 全屏。拖拽跟手，松手按位置与惯性吸附到最近一档，
@@ -552,16 +557,10 @@ private fun BoxScope.AssistantPanel(
     var sheetMode by remember { mutableStateOf(AssistantSheetMode.HALF) }
     var draggedHeightPx by remember { mutableStateOf<Float?>(null) }
     var dismissPullPx by remember { mutableFloatStateOf(0f) }
-    var handoffPullPx by remember { mutableFloatStateOf(0f) }
-    var directHandoffPullPx by remember { mutableFloatStateOf(0f) }
-    var thresholdHapticSent by remember { mutableStateOf(false) }
-    var handoffRunning by remember { mutableStateOf(false) }
     var keepBottomAnchored by remember { mutableStateOf(true) }
     // 空态输入区下方渐变压暗的实测取材：输入区实测高度（含自身内边距），
     // 输入区长高 / 缩短时渐变同步变高。绘制阶段读取，只触发重绘不触发重组。
     var composerHeightPx by remember { mutableFloatStateOf(0f) }
-    val handoffThresholdPx = with(density) { AssistantHandoffThreshold.toPx() }
-    val directHandoffThresholdPx = with(density) { AssistantDirectHandoffThreshold.toPx() }
     val dismissThresholdPx = with(density) { AssistantDismissThreshold.toPx() }
     val flingVelocityPx = with(density) { AssistantFlingVelocity.toPx() }
     val hasMessages = state.messages.isNotEmpty()
@@ -599,9 +598,6 @@ private fun BoxScope.AssistantPanel(
     val visibleSheetHeightPx = sheetHeightPx.coerceAtMost(
         (maxContentHeightPx - imeOverlapPx).coerceAtLeast(0f),
     )
-    val handoffReady = canOpenConversation &&
-        (handoffPullPx >= handoffThresholdPx ||
-            directHandoffPullPx >= directHandoffThresholdPx)
 
     /**
      * 吸附到目标高度：从 [sheetHeight] 的当前值（即手指松手位置）开始续接播放，
@@ -625,47 +621,25 @@ private fun BoxScope.AssistantPanel(
             settleSheet(targetHeightPx)
         }
     }
-    LaunchedEffect(handoffReady) {
-        if (handoffReady && !thresholdHapticSent) {
-            thresholdHapticSent = true
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        } else if (!handoffReady) {
-            thresholdHapticSent = false
-        }
-    }
-
-    fun triggerHandoff(velocityY: Float = 0f) {
-        if (handoffRunning || !canOpenConversation) return
-        handoffRunning = true
-        // 交接动画期间先吸附到全屏档，避免交接途中高度掉回半屏。
-        sheetMode = AssistantSheetMode.FULL
-        draggedHeightPx = null
-        settleSheet(maxContentHeightPx, velocityY)
-        scope.launch {
-            delay(120)
-            onOpenConversation()
-        }
-    }
 
     /**
      * 拖拽跟手：按当前基准高度与手指位移请求新高度（上拉变大、下拉变小），
-     * 同时刷新「半屏档继续下拉（关闭）」与「全屏档继续上拉（交接）」的越界量。
+     * 同时刷新「半屏档继续下拉（关闭）」的越界量。
      * 高度直接写 [sheetHeight] 当前值（不播放动画），松手后由 [settleSheet] 从此处续接。
      */
     fun dragBy(deltaY: Float): Float {
-        if (handoffRunning || state.messages.isEmpty()) return 0f
+        if (state.messages.isEmpty()) return 0f
         val base = draggedHeightPx ?: sheetHeight.value
         val requested = base - deltaY
         val clamped = requested.coerceIn(0f, maxContentHeightPx)
         draggedHeightPx = clamped
         dismissPullPx = (halfSheetHeightPx - requested).coerceAtLeast(0f)
-        handoffPullPx = (requested - maxContentHeightPx).coerceAtLeast(0f)
         scope.launch { sheetHeight.snapTo(clamped) }
         return deltaY
     }
 
     /**
-     * 松手：先判「继续上拉交接 / 继续下拉关闭」，其余按位置与惯性在两档之间吸附。
+     * 松手：先判「继续下拉关闭」，其余按位置与惯性在两档之间吸附。
      * 吸附一律从松手位置续接（见 [settleSheet]），不再有「跳回原位再播放」。
      * 速度判据只对面板自身拖拽生效，避免消息列表的甩动被误判成翻档 / 关闭。
      */
@@ -675,18 +649,11 @@ private fun BoxScope.AssistantPanel(
         val current = draggedHeightPx ?: sheetHeight.value
         draggedHeightPx = null
         val dismissPull = dismissPullPx
-        val handoffPull = handoffPullPx
         dismissPullPx = 0f
-        handoffPullPx = 0f
-        directHandoffPullPx = 0f
         val flingUp = wasDragging && velocityY <= -flingVelocityPx
         val flingDown = wasDragging && velocityY >= flingVelocityPx
         val pastMidpoint = current >= (halfSheetHeightPx + maxContentHeightPx) / 2f
         when {
-            // 全屏档继续上拉：交接回主程序（或快速上甩）。
-            handoffPull >= handoffThresholdPx ||
-                (flingUp && current >= maxContentHeightPx * 0.98f) ->
-                triggerHandoff(velocityY)
             // 半屏档继续下拉：关闭浮层（或快速下甩）。
             dismissPull >= dismissThresholdPx ||
                 (flingDown && current < halfSheetHeightPx) ->
@@ -707,25 +674,11 @@ private fun BoxScope.AssistantPanel(
     val nestedScrollConnection = remember(
         halfSheetHeightPx,
         maxContentHeightPx,
-        canOpenConversation,
         listState,
     ) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 val current = draggedHeightPx ?: sheetHeight.value
-                if (
-                    available.y < 0f &&
-                    canOpenConversation &&
-                    current >= maxContentHeightPx * 0.98f
-                ) {
-                    directHandoffPullPx += -available.y
-                    if (directHandoffPullPx >= directHandoffThresholdPx) {
-                        triggerHandoff()
-                    }
-                    // 第二段上滑由父容器在 pre-scroll 阶段完整消费，避免列表或
-                    // overscroll 先截走事件后，接管手势永远达不到阈值。
-                    return Offset(0f, available.y)
-                }
                 // 未到全屏时上滑先长高、到顶后下滑先收缩（半屏档继续下滑即下拉关闭），
                 // 两档之外不消费，交还列表自身滚动。
                 val shouldResize = (available.y < 0f && current < maxContentHeightPx) ||
@@ -876,19 +829,10 @@ private fun BoxScope.AssistantPanel(
                     // 末尾；服务注入的新消息不再重锚，上翻阅读不会被拽回去。
                     keepBottomAnchored = true
                     onSubmit(text)
-                    // 只置标志回不了底：用户上翻后 hasLeftBottom 已闩锁，列表状态机下一帧
-                    // 会走 resolveKeepBottomAnchored 的 hasLeftBottom -> false 分支把锚定反杀
-                    // 回 false，跟底控制器随即冻结。主界面靠提交自带的 settleListToBottom 动画
-                    // 回底（动画不读锚定，飞行中锚定被反杀也无妨，反而免掉跟底双驱动）；
-                    // 落底贴住静止线那一帧 when2 自动重锚并清闩锁，之后流式跟底无缝接管。
-                    // 这里镜像主界面提交的同一段（同 ChatSendSettleSpec 软弹簧 + 精修贴底）。
+                    // 与主界面共用同一段提交回底（掐惯性 → 落一帧 → 重锚 → 平滑赶到底）。
+                    // 只置标志回不了底的原因见 settleListToBottomAfterSubmit 的 KDoc。
                     scope.launch {
-                        // 与主界面同构：先掐掉残余惯性，布局落一帧后再锚定并赶路。
-                        listState.scroll(MutatePriority.PreventUserInput) { }
-                        withFrameNanos { }
-                        keepBottomAnchored = true
-                        val last = listState.layoutInfo.totalItemsCount - 1
-                        if (last >= 0) settleListToBottom(listState, last, scrollSpec = ChatSendSettleSpec)
+                        settleListToBottomAfterSubmit(listState) { keepBottomAnchored = true }
                     }
                 },
                 onStop = onStop,
@@ -1294,10 +1238,13 @@ private fun SelectedScreenContext(
     val removeColor = if (enabled) scheme.onSurfaceVariant else scheme.outline
     Row(
         modifier = Modifier
-            .height(60.dp)
-            // 卡片圆角 15dp：与 4dp 内边距一起给内层图片定同心基准（见下方图片 clip）。
-            .background(scheme.surfaceContainerHigh, RoundedCornerShape(15.dp))
-            .padding(4.dp),
+            .height(ScreenContextPreviewCardHeight)
+            // 卡片圆角 15dp：与 [ScreenContextPreviewInset] 一起给内层图片定同心基准。
+            .background(
+                scheme.surfaceContainerHigh,
+                RoundedCornerShape(ScreenContextPreviewCardCorner),
+            )
+            .padding(ScreenContextPreviewInset),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         previewBitmap?.let { bitmap ->
@@ -1305,12 +1252,12 @@ private fun SelectedScreenContext(
                 bitmap = bitmap,
                 contentDescription = stringResource(R.string.voice_screen_preview),
                 modifier = Modifier
-                    // 52 = 卡片 60 − 上下内边距 4×2：横纵内缩一致，四段弧线才与卡片同圆心
+                    // 边长按「卡片高 − 上下内边距」派生：横纵内缩一致，四段弧线才与卡片同圆心
                     // （旧值 50 在纵向上缩 5dp ≠ 横向 4dp，同心被破坏）。
-                    .size(52.dp)
-                    // 同心：图片圆角 = 卡片圆角 15dp − 卡片内边距 4dp = 11dp，
-                    // 弧心与卡片圆角圆心重合（与输入条图框同一套「半径差 = 间距」的同心规则）。
-                    .clip(RoundedCornerShape(11.dp)),
+                    .size(ScreenContextPreviewImageSize)
+                    // 同心：图片圆角 = 卡片圆角 − 内边距，弧心与卡片圆角圆心重合
+                    // （与输入条图框同一套「半径差 = 间距」的同心规则）。
+                    .clip(RoundedCornerShape(ScreenContextPreviewImageCorner)),
                 contentScale = ContentScale.Crop,
             )
         }

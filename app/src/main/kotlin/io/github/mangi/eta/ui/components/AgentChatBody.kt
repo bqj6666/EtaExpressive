@@ -424,7 +424,8 @@ internal fun AgentChatBody(
             aggressiveGrouping = aggressiveFold,
         )
     }
-    val timelineEntries = remember(visibleMessages) {
+    // 同上：档位参与 key，避免切换折叠档后沿用旧档算出的 entry 结构。
+    val timelineEntries = remember(visibleMessages, aggressiveFold) {
         StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { timelineProjection.project(visibleMessages) }
     }
     val hasCompactingChildContext = remember(childContexts) { childContexts.any { it.isCompacting } }
@@ -561,17 +562,7 @@ internal fun AgentChatBody(
                     onSubmit(text)
                     submitScrollScope.launch {
                         // Cancel an old fling, then anchor the edited/replaced list after layout.
-                        scrollState.scroll(androidx.compose.foundation.MutatePriority.PreventUserInput) { }
-                        withFrameNanos { }
-                        keepBottomAnchored = true
-                        val last = scrollState.layoutInfo.totalItemsCount - 1
-                        // 回到底部走平滑动画：跨项用翻页曲线赶路，可见差额用弹簧逐像素收拢，
-                        // 末尾仍由 settle 内的精修收在精确贴底，替换原来的瞬跳定位。
-                        if (last >= 0) settleListToBottom(
-                            scrollState,
-                            last,
-                            scrollSpec = ChatSendSettleSpec,
-                        )
+                        settleListToBottomAfterSubmit(scrollState) { keepBottomAnchored = true }
                     }
                 },
                 onReasoningEffortChange = onReasoningEffortChange,
@@ -932,7 +923,10 @@ internal fun AgentConversationMessages(
                 aggressiveGrouping = aggressiveFold,
             )
         }
-        remember(visibleMessages) {
+        // 缓存 key 必须带 aggressiveFold：投影实例按档位重建，但这里若只认 messages 引用，
+        // 档位切换后仍会返回旧实例算出的旧结构。主列表通常因换会话/换引用自愈，语音浮窗的
+        // state.messages 引用长期不变，会一直停在旧档——表现为本该连续的卡片中间多出正文/缝隙。
+        remember(visibleMessages, aggressiveFold) {
             StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) {
                 standaloneTimelineProjection.project(visibleMessages)
             }
@@ -1040,6 +1034,13 @@ internal fun AgentConversationMessages(
     }
     val finalResultMessageIds = remember(turnFooters) {
         turnFooters.values.mapTo(mutableSetOf()) { it.id }
+    }
+    // 相邻分段卡片行的接缝投影：任意两张相邻卡片行（含跨批次组末↔组首、折叠摘要↔
+    // 步骤、回报卡↔卡片行）相接处取内圆 + 1dp 薄边（组缝节奏）；页脚锚在两行之间时
+    // 按钮行隔开了它们，缝不成立、行尾维持外圆收边。
+    // 随行投影与页脚锚点重算，回报卡与步骤行的位置/间距由同一份投影驱动。
+    val receiptSeams = remember(timelineRows, turnFooters) {
+        timelineRows.receiptCardSeams(footerKeys = turnFooters.keys)
     }
     // Reveal dependencies follow the projection's existing anchors, not a
     // second ownership heuristic. A stopped notice can own actions while an
@@ -1937,6 +1938,9 @@ internal fun AgentConversationMessages(
                             // 播过即作废：滚动回收后重新组合不再重播。
                             LaunchedEffect(message.id) { onSentUserMessageEntranceConsumed(message.id) }
                         }
+                        // 派发回报卡：接缝布局由投影给出（缝侧内圆 + 1dp 薄边、回复起点 8dp、
+                        // 轮内 2dp、轮间基准 8dp）；非回报卡行为 null，走原路径。
+                        val receiptRowLayout = receiptSeams.receiptLayout(entry.key)
                         ChatMessageItem(
                             message = message,
                             speechPreface = "",
@@ -1969,6 +1973,7 @@ internal fun AgentConversationMessages(
                             justSent = sentEntrance,
                             userBubblePosition = userBubblePositions[message.id]
                                 ?: UserBubblePosition.Single,
+                            receiptLayout = receiptRowLayout,
                             isPaused = isPaused,
                             onThinkingToggle = if (message is ThinkingMessageUi) {
                                 { _, willExpand -> onThinkingRowToggle(entry.key, willExpand) }
@@ -2015,22 +2020,30 @@ internal fun AgentConversationMessages(
                             },
                             // 组首与相邻内容的上间距：紧邻用户气泡（回复起点）抬到基准半距
                             // 8dp（与文字侧一致合成 16dp），否则 2dp 薄边（与文字行底 8 合成 10dp）。
-                            // 展开后与步骤行之间是 2dp 露缝（1+1）；展开后首步若是纯文本回复，
-                            // 列表不接摘要，摘要下沿仍是 2dp。
+                            // 展开后与步骤行之间是 2dp 露缝（1+1）；展开后首步若是断开件
+                            // （纯文本回复 / 分界行），列表不接摘要，摘要下沿仍是 2dp。
                             // 用 visualExpanded：收起进行中摘要已回到单独一条的间距/形状，
                             // 与步骤行退场同帧。
                             modifier = Modifier.padding(
-                                top = if (workRowFollowsUser[entry.key] == true) {
-                                    AgentChatSpacing.RowBaseHalf
-                                } else {
-                                    AgentChatSpacing.TurnInnerEdge
+                                top = when {
+                                    // 摘要行上沿与上方卡片行相接：薄边改由本行出（上方卡片行
+                                    // 下外距也是 1dp，合成 2dp 组缝）。
+                                    receiptSeams.hasSeamAbove(entry.key) -> AgentChatSpacing.WorkSeamHalf
+                                    workRowFollowsUser[entry.key] == true -> AgentChatSpacing.RowBaseHalf
+                                    else -> AgentChatSpacing.TurnInnerEdge
                                 },
-                                bottom = if (visualExpanded && entry.group.summaryContinuesIntoSteps()) {
-                                    AgentChatSpacing.WorkSeamHalf
-                                } else {
-                                    AgentChatSpacing.TurnInnerEdge
+                                bottom = when {
+                                    visualExpanded && entry.group.summaryContinuesIntoSteps() ->
+                                        AgentChatSpacing.WorkSeamHalf
+                                    // 摘要行下沿与下方卡片行相接：薄边改由本行出；
+                                    // 展开续接步骤行时缝让位给组内露缝。
+                                    receiptSeams.hasSeamBelow(entry.key) -> AgentChatSpacing.WorkSeamHalf
+                                    else -> AgentChatSpacing.TurnInnerEdge
                                 },
                             ),
+                            seamAboveCard = receiptSeams.hasSeamAbove(entry.key),
+                            seamBelowCard = receiptSeams.hasSeamBelow(entry.key) &&
+                                !(visualExpanded && entry.group.summaryContinuesIntoSteps()),
                         )
                     }
                     is AgentTimelineRow.WorkStep -> {
@@ -2051,10 +2064,18 @@ internal fun AgentConversationMessages(
                             modifier = Modifier.padding(
                                 top = when {
                                     !entry.isFirst -> AgentChatSpacing.WorkSeamHalf
+                                    // 组首步骤行上沿与上方卡片行相接：薄边改由本行出。
+                                    receiptSeams.hasSeamAbove(entry.key) -> AgentChatSpacing.WorkSeamHalf
                                     workRowFollowsUser[entry.key] == true -> AgentChatSpacing.RowBaseHalf
                                     else -> AgentChatSpacing.TurnInnerEdge
                                 },
-                                bottom = if (entry.isLast) AgentChatSpacing.TurnInnerEdge else AgentChatSpacing.WorkSeamHalf,
+                                bottom = when {
+                                    entry.isLast && receiptSeams.hasSeamBelow(entry.key) ->
+                                        // 组末步骤行下沿与下方卡片行相接：薄边改由本行出。
+                                        AgentChatSpacing.WorkSeamHalf
+                                    entry.isLast -> AgentChatSpacing.TurnInnerEdge
+                                    else -> AgentChatSpacing.WorkSeamHalf
+                                },
                             ),
                         ) {
                             ChatMessageItem(
@@ -2074,6 +2095,8 @@ internal fun AgentConversationMessages(
                                     entry.isLast -> SegmentedRowPosition.Last
                                     else -> SegmentedRowPosition.Middle
                                 },
+                                seamAboveReceipt = receiptSeams.hasSeamAbove(entry.key),
+                                seamBelowReceipt = receiptSeams.hasSeamBelow(entry.key),
                                 // 包装层已给薄边/组缝：运行轨迹等双上下文行据此收零自身纵向外距。
                                 inWorkGroup = true,
                                 modifier = Modifier,
@@ -2786,6 +2809,28 @@ internal fun AnchorChatTailOnViewportChange(
                 }
             }
     }
+}
+
+/**
+ * 提交消息后回底：掐掉残余惯性 → 落一帧让新内容进布局 → 重新锚定 → 平滑赶到底。
+ *
+ * 提交方只置 `keepBottomAnchored = true` 是回不了底的：用户上翻后 `hasLeftBottom` 已闩锁，
+ * 列表状态机下一帧会把它反杀回 false，跟底控制器随即冻结。所以两条路径都要靠这段动画，
+ * 而且必须是**动画**回底（动画不读锚定，飞行中被反杀也无妨，反而免掉跟底双驱动）；
+ * 落底贴住静止线那一帧会自动重锚并清闩锁，之后流式跟底无缝接管。
+ *
+ * 主界面提交与系统语音浮窗提交共用这一份；[reanchor] 由调用方传自己的状态写入。
+ */
+internal suspend fun settleListToBottomAfterSubmit(
+    listState: LazyListState,
+    reanchor: () -> Unit,
+) {
+    // 先掐掉残余惯性，否则用户刚甩过列表时动画起点是漂的。
+    listState.scroll(androidx.compose.foundation.MutatePriority.PreventUserInput) { }
+    withFrameNanos { }
+    reanchor()
+    val last = listState.layoutInfo.totalItemsCount - 1
+    if (last >= 0) settleListToBottom(listState, last, scrollSpec = ChatSendSettleSpec)
 }
 
 /**

@@ -39,7 +39,9 @@ import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.skill.PublicGitHubSkillSource
 import io.github.mangi.eta.agent.tool.AgentLocalTools
 import io.github.mangi.eta.agent.tool.AgentDangerousOperationPolicy
+import io.github.mangi.eta.agent.tool.AgentRiskAssessment
 import io.github.mangi.eta.agent.tool.AgentToolReviewCoordinator
+import io.github.mangi.eta.agent.tool.AgentToolReviewVerdict
 import io.github.mangi.eta.agent.tool.AssistantToolSwitches
 import io.github.mangi.eta.agent.tool.AgentToolRequirements
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
@@ -51,6 +53,7 @@ import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
+import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import io.github.mangi.eta.agent.terminal.LinuxDistribution
 import kotlinx.coroutines.runBlocking
@@ -212,9 +215,11 @@ internal class AgentRuntimeRunExecutor(
             val runVirtualDisplay = {
                 session.taskSurfaceMode == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
             }
-            // 渐进加载模式在会话首个 run 锁定（对齐 ZCode「新建会话生效，当前会话保持」）：
+            // 渐进加载模式在会话首个 run 锁定（对齐 ZCode「新建会话生效，当前会话保持」），
+            // 压缩边界例外：见下面 onEvent 里的 unlockToolLoadingModeAtCompaction。
             // search = 延迟组 + tools_search 命中解锁；group = 仅 tools_use_group 整组打开；
-            // off = 发送完整工具目录。
+            // off = 发送完整工具目录。三档的布尔量一一对应：fullCatalog = off、
+            // searchEnabled = search、suffix（转发 + 原生组集合）= 非 off。
             val toolLoadingMode = runCatching {
                 Prefs.resolveToolLoadingMode(request.effectiveModelSessionId)
             }.getOrDefault(Prefs.Keys.TOOL_LOADING_MODE_SEARCH)
@@ -227,8 +232,20 @@ internal class AgentRuntimeRunExecutor(
             val calendarGroupUsable = calendarIntentHit && allowPersonal && runCatching {
                 AgentToolCapabilities.capture(appContext)
             }.getOrNull()?.let { it.rootAvailable || it.calendarReadable || it.calendarWritable } == true
-            val presetToolNames: Set<String>? = voicePreset?.toolNames
-                ?: AgentCalendarIntent.toolNames.takeIf { calendarGroupUsable }
+            // 「添加日程」快速路径：语音 chip 显式命中，或主界面指令里有明确的写入动词。
+            // 只读/识别类请求（如「识别截图中的日程」）不进快速路径，也不预热写入目录。
+            // 前置要求个人数据开关真的开着：否则目录会被投影清空、complete 退化回普通对话，
+            // 而这里已经压低了思考档，就会出现「完整常驻提示 + 关思考」的错配。
+            val calendarToolsEnabled = allowPersonal && request.config.personalTools
+            val calendarFastTask = calendarToolsEnabled && (
+                voicePreset?.fastPath == true ||
+                    (calendarGroupUsable && AgentCalendarIntent.writeIntent(request.prompt))
+            )
+            val presetToolNames: Set<String>? = when {
+                calendarFastTask -> AgentVoiceToolPresets.calendarFastToolNames
+                else -> voicePreset?.toolNames
+                    ?: AgentCalendarIntent.toolNames.takeIf { calendarGroupUsable }
+            }
             val presetOpenedGroups: Set<String>? = voicePreset?.openedGroups
                 ?: AgentCalendarIntent.openedGroups.takeIf { calendarGroupUsable }
             val presetRun = presetToolNames != null
@@ -245,8 +262,12 @@ internal class AgentRuntimeRunExecutor(
             // 这里只表达会话档位；预设运行时由目录层按 preset 非空自行关闭 tools_search。
             // 这样命中日程但目录为空退化回普通对话时，仍保留原有的搜索能力。
             val toolLoadingSearchEnabled = toolLoadingMode == Prefs.Keys.TOOL_LOADING_MODE_SEARCH
-            // 缓存优先档：延迟组工具经固定入口 tool_call 转发，目录在会话内字节恒定。
-            val toolLoadingSuffixMode = toolLoadingMode == Prefs.Keys.TOOL_LOADING_MODE_SUFFIX
+            // 缓存优先转发：search/group 档延迟组工具都经固定入口 tool_call 转发，
+            // 目录在会话内（原生组集合冻结的意义上）字节恒定；off 档保持全量原生 schema。
+            // preset 运行不参与：模型侧 suffixMode 按 presetToolNames 排除（中途退化回
+            // 普通对话时也保持 false），这里同步排除，两侧的目录与回执语义逐项一致。
+            val toolLoadingSuffixMode =
+                toolLoadingMode != Prefs.Keys.TOOL_LOADING_MODE_OFF && !presetRun
             val mcpDeferred = runCatching { Prefs.mcpToolExposureDeferred() }.getOrDefault(true)
             val mcpProjection: AgentModelClient.McpToolProjection? =
                 if (mcpDeferred && !toolLoadingFullCatalog) mcpSnapshot else null
@@ -259,6 +280,10 @@ internal class AgentRuntimeRunExecutor(
             // tools_search 的评分语料：目录重建时填入内置工具描述，MCP 描述在快照就绪后并入。
             val toolSearchIndex = java.util.concurrent.ConcurrentHashMap<String, String>()
             if (mcpProjection != null) toolSearchIndex.putAll(mcpSnapshot.toolDescriptions())
+            // 缓存优先转发（search/group 档）：tool_call 壳会落到 AgentLocalTools，而外层
+            // 路由按工具名分派、够不到 MCP 执行器，因此必须把它与 schema 渲染一起注入，
+            // 转发才能在按真实 schema 校验后把调用交给它。
+            val mcpExecutor = McpToolExecutor(mcpSnapshot)
             // 手机操作权按 run 登记：状态变化经 GuiControlChanged 投送给服务，run 结束即释放。
             guiRun = guiControl.openRun(request.runId, runController) { status ->
                 acceptEvent(session, AgentEvent.GuiControlChanged(status), archivedEvents, entrySurfaceGuard, checkpointRecorder)
@@ -267,28 +292,29 @@ internal class AgentRuntimeRunExecutor(
             // 用来把「被决策收窄」与「用户关闭」区分成不同错误来源。
             val decisionPlanRef = java.util.concurrent.atomic.AtomicReference<
                 io.github.mangi.eta.agent.decision.AgentDecisionPlan?>(null)
-            // 智能审查档的模型裁决桥：这里才拿得到 ModelConfig / 控制器 / 会话上下文。
-            // 每次 run 注入一次（构造实参列表里不能写赋值语句），闭包捕获本次 run
-            // 的用户请求与配置；失败由策略回退规则确认。smartReview 是进程级 var，
-            // 多个 run 并发时以最后一次注入为准（结论按调用参数缓存，不影响正确性）。
-            AgentDangerousOperationPolicy.smartReview = { name, arguments, assessment ->
-                val recentRequest = request.history
-                    .asReversed()
-                    .firstOrNull { it.role == "user" && it.content.isNotBlank() }
-                    ?.content
-                    ?.take(1500)
-                    ?: request.prompt.take(1500)
-                AgentToolReviewCoordinator.review(
-                    toolName = name,
-                    argumentsJson = arguments,
-                    riskLevel = assessment.level.name,
-                    riskReasons = assessment.reasons,
-                    conversationContext = recentRequest,
-                    fallbackModelConfig = request.config,
-                    controller = runController,
-                    sessionId = request.effectiveModelSessionId,
-                )
-            }
+            // 智能审查档的模型裁决闭包：捕获本次 run 的用户请求与配置（这里才拿得到
+            // ModelConfig / 控制器 / 会话上下文），随 confirm 闭包逐次传给策略——
+            // 曾挂在进程级 var 上，多 run 并发时以最后一次注入为准，别的 run 会拿错
+            // 裁决上下文。失败由策略回退规则确认，绝不直接放行。
+            val smartReviewForRun: (String, String, AgentRiskAssessment) -> AgentToolReviewVerdict? =
+                { name, arguments, assessment ->
+                    val recentRequest = request.history
+                        .asReversed()
+                        .firstOrNull { it.role == "user" && it.content.isNotBlank() }
+                        ?.content
+                        ?.take(1500)
+                        ?: request.prompt.take(1500)
+                    AgentToolReviewCoordinator.review(
+                        toolName = name,
+                        argumentsJson = arguments,
+                        riskLevel = assessment.level.name,
+                        riskReasons = assessment.reasons,
+                        conversationContext = recentRequest,
+                        fallbackModelConfig = request.config,
+                        controller = runController,
+                        sessionId = request.effectiveModelSessionId,
+                    )
+                }
             val executor = AgentLocalTools(
                 context = appContext, logger = AndroidAgentLogger, browserRunId = request.runId,
                 guiControl = guiRun,
@@ -297,7 +323,15 @@ internal class AgentRuntimeRunExecutor(
                 }?.let { AgentUiHandoffPayload.from(it.payload).conversationId }.orEmpty(),
                 agentConversationId = request.effectiveModelSessionId,
                 decisionAllowedGroups = { decisionPlanRef.get()?.openableGroupLimit },
-                groupToolsViaCall = toolLoadingSuffixMode,
+                // 决策闲聊态逃生通道：目录（AgentToolCatalog.groupDiscoveryUnrestricted）与
+                // 提示（组索引）都按用户开关全集宣传了可打开的组，执行侧闸门必须同步放行，
+                // 否则模型照索引打开组会被拒——三处读同一个 plan 字段，保证目录、提示、
+                // 执行一致。用户组开关仍是执行侧的独立上限（toolGroupGate）。
+                decisionDiscoveryUnrestricted = { decisionPlanRef.get()?.chatOnly == true },
+                // 与 AgentModelClient.suffixMode 对齐：preset 排除必须两侧一致，否则预设运行
+                // 目录发原生 schema、执行器却按转发出回执（含中途退化回普通对话的路径——
+                // 模型侧的 suffixMode 用原始 presetToolNames 判定，同样保持 false）。
+                groupToolsViaCall = toolLoadingSuffixMode && !presetRun,
                 frozenSurface = runSurface,
                 chooseSurface = { toolName, toolsClosed ->
                     // 先写会话再等弹窗退场；返回值取自会话，工具侧与会话保持一致。
@@ -326,12 +360,26 @@ internal class AgentRuntimeRunExecutor(
                 memoryToolsEnabled = { AgentMemoryRepository.isEnabled(assistant.id) },
                 screenshotExcludedPackages = { entrySurfaceGuard?.consumeScreenshotExcludedPackages().orEmpty() },
                 // 危险操作逐次确认：未确认时拒绝本次调用，用户同意后重发即可通过。
+                // runId/conversationId 进闸门的待确认槽与授权键（按 run 等确认、按会话授权）。
                 confirmDangerousOperation = { toolName, argumentsJson ->
-                    AgentDangerousOperationPolicy.decision(toolName, argumentsJson)
+                    AgentDangerousOperationPolicy.decision(
+                        toolName,
+                        argumentsJson,
+                        runId = request.runId,
+                        conversationId = request.effectiveModelSessionId,
+                        review = smartReviewForRun,
+                    )
                 },
                 // 自建配方的 Root shell 步骤同样要过命令启发式，避免用配方名绕过确认。
                 confirmRecipeDangerousOperation = { toolName, argumentsJson, shellCommands ->
-                    AgentDangerousOperationPolicy.decisionForRecipe(toolName, argumentsJson, shellCommands)
+                    AgentDangerousOperationPolicy.decisionForRecipe(
+                        toolName,
+                        argumentsJson,
+                        shellCommands,
+                        runId = request.runId,
+                        conversationId = request.effectiveModelSessionId,
+                        review = smartReviewForRun,
+                    )
                 },
                 beforeToolExecution = { toolName ->
                     val requiresAccessibility = AgentToolRequirements.requiresAccessibility(toolName)
@@ -353,6 +401,9 @@ internal class AgentRuntimeRunExecutor(
                 runSkillEntries = skillContext.installedSkills, memoryAssistantId = assistant.id,
                 runSkillsRoot = runSkillsRoot, pendingSkillConflict = pendingSkillConflict,
                 dynamicToolGroups = { if (mcpProjection != null) mcpSnapshot.deferredGroups() else emptyList() },
+                // MCP 组的回执文档与参数校验同源：快照按单组渲染 schema，与目录追加同一份。
+                mcpToolSchemas = { groupId -> JSONArray().also { mcpSnapshot.appendTools(it, setOf(groupId)) } },
+                mcpToolExecutor = { call -> mcpExecutor.execute(call) },
                 toolSearchDescriptions = { toolSearchIndex },
                 toolSearchEnabled = { toolLoadingSearchEnabled },
             )
@@ -389,7 +440,7 @@ internal class AgentRuntimeRunExecutor(
                         },
                     )
                 }
-            val routingExecutor = RoutingToolExecutor(local = executor, mcp = McpToolExecutor(mcpSnapshot))
+            val routingExecutor = RoutingToolExecutor(local = executor, mcp = mcpExecutor)
             val ownership = AgentChildToolOwnership { routingExecutor.close() }
             toolsOwner = ownership
             toolsBinding = runController.register {
@@ -561,10 +612,12 @@ internal class AgentRuntimeRunExecutor(
                     }
                     // 危险操作的确认走「模型自己用 ask_user 问」：用户明确同意时登记一次性授权，
                     // 让随后重发的同一个调用能够通过闸门；其它回答不构成同意。
+                    // runId 选定本 run 的待确认槽——并发 run 各问各的确认，不得互相代答。
                     runCatching {
-                        io.github.mangi.eta.agent.tool.AgentDangerousConfirmationGate.onUserAnswered(
+                        io.github.mangi.eta.agent.tool.AgentDangerousConfirmationGate.onUserAnsweredScoped(
                             answeredKind = answer.kind,
                             optionId = answer.optionId,
+                            runId = request.runId,
                         )
                     }
                     AgentModelClient.ToolResult(AgentQuestionCodec.resultJson(question, answer).toString())
@@ -656,7 +709,18 @@ internal class AgentRuntimeRunExecutor(
                 terminalTools = allowTerminal && request.config.terminalTools,
                 deviceTools = allowDevice && request.config.deviceTools,
                 personalTools = allowPersonal && request.config.personalTools,
-            )
+            ).let { base ->
+                if (!calendarFastTask) return@let base
+                // 快捷任务的目标、时间口径与失败口径都已由专用短规则讲死，不需要长链推理；
+                // 把思考档压到最低是这类任务最大的一段提速（曾观测到 4400 reasoning token
+                // 全花在给互相冲突的常驻规则做仲裁上）。模型强制推理时退到 LOW——
+                // ModelConfig.validate 会拒绝强制推理模型上的 OFF。
+                val mandatoryReasoning = base.reasoningCapabilities?.mandatory == true
+                base.copy(
+                    thinkingEnabled = mandatoryReasoning,
+                    reasoningEffort = if (mandatoryReasoning) ReasoningEffort.LOW else ReasoningEffort.OFF,
+                )
+            }
             // 日程预热运行不跑判断模型：工具集已由预设/关键词确定，再收窄只会让模型看不到工具。
             // 唤起即屏幕上下文（硬边界：仅助手弹窗 run，主程序不做该判断）：判断模型判定或指令
             // 正则命中「需要看屏幕」且消息未附图时，预开屏幕组 + 注入首轮 observe_screen 引导，
@@ -726,6 +790,9 @@ internal class AgentRuntimeRunExecutor(
                 // 唤起即屏幕上下文：屏幕组已预开（上面并入 plan/打开组），再注入首轮
                 // observe_screen 引导——模型一步到位带截图观察，省一次解锁往返。
                 screenObservationRule = screenLookHint,
+                // 日程快速路径：专用短提示 + 最低思考档 + 有界轮次，目录退化时由 complete 自动失效。
+                calendarFastTask = calendarFastTask,
+                fastPathMaxRounds = AgentVoiceToolPresets.CALENDAR_FAST_MAX_ROUNDS,
                 sessionId = request.effectiveModelSessionId,
                 capabilitiesProvider = { AgentToolCapabilities.captureForRound(appContext).copy(virtualDisplay = runVirtualDisplay()) },
                 // 延迟工具域：tools_use_group 成功后由执行器累积，下一轮重建目录时生效。
@@ -778,6 +845,13 @@ internal class AgentRuntimeRunExecutor(
                     timing.accept(event)
                     foregroundReplay.accept(event)
                     decisionMismatch?.accept(event)
+                    // 压缩边界：让下一个 run 重新读用户的档位设置。只认真正的摘要压缩——
+                    // 修剪超长工具结果不算，否则设备任务里几乎每轮都会触发一次换档判定。
+                    if (event is AgentEvent.ContextCompacted &&
+                        event.applied && !event.blocked && !event.pruningOnly
+                    ) {
+                        runCatching { Prefs.unlockToolLoadingModeAtCompaction(request.effectiveModelSessionId) }
+                    }
                     acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
                 },
             )

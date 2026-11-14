@@ -7,10 +7,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FrameDiagnosticRouteTest {
-    @Test fun settingsAndChatHaveDistinctStableLabels() {
+    @Test fun settingsAndSubPagesHaveDistinctStableLabels() {
         assertEquals(FrameDiagnosticPage.Settings, AppRoute.Settings.frameDiagnosticPage())
-        assertEquals(FrameDiagnosticPage.Chat, AppRoute.Chat.frameDiagnosticPage())
         assertEquals(FrameDiagnosticPage.SubAgents, AppRoute.SubAgents.frameDiagnosticPage())
+        assertEquals(FrameDiagnosticPage.McpServerAdd, AppRoute.McpServerAdd.frameDiagnosticPage())
+        assertEquals(FrameDiagnosticPage.ModelProviderModelEdit, AppRoute.ModelProviderModelEdit("p", "m", true).frameDiagnosticPage())
+        assertEquals(FrameDiagnosticPage.ToolRecipeEdit, AppRoute.ToolRecipeEdit("recipe").frameDiagnosticPage())
     }
 
     @Test fun routeArgumentsNeverReachDiagnosticLabels() {
@@ -19,6 +21,8 @@ class FrameDiagnosticRouteTest {
             AppRoute.LinuxFiles(secret), AppRoute.McpServerDetail(secret),
             AppRoute.ModelProviderDetail(secret), AppRoute.AssistantEdit(secret),
             AppRoute.ModelProviderNew(NewProviderType.OpenAiCompatible, secret),
+            AppRoute.ModelProviderModelEdit("provider", secret, true),
+            AppRoute.ToolRecipeEdit(secret),
         )
         routes.forEach { route ->
             assertFalse(route.frameDiagnosticPage().name.contains(secret))
@@ -26,6 +30,10 @@ class FrameDiagnosticRouteTest {
         }
         assertEquals(AppRoute.ModelProviderDetail("a").frameDiagnosticPage(),
             AppRoute.ModelProviderDetail("b").frameDiagnosticPage())
+        assertEquals(AppRoute.ModelProviderModelEdit("a", "b", true).frameDiagnosticPage(),
+            AppRoute.ModelProviderModelEdit("c", "d", false).frameDiagnosticPage())
+        assertEquals(AppRoute.ToolRecipeEdit("a").frameDiagnosticPage(),
+            AppRoute.ToolRecipeEdit("b").frameDiagnosticPage())
     }
 
     @Test fun legacyRoutesDescribeTheScreenActuallyRendered() {

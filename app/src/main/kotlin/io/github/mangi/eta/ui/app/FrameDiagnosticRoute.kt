@@ -6,7 +6,6 @@ import io.github.mangi.eta.ui.navigation.AppRoute
 /** Exhaustive mapping intentionally ignores all route payloads. */
 internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     AppRoute.Home -> FrameDiagnosticPage.Home
-    AppRoute.Chat -> FrameDiagnosticPage.Chat
     AppRoute.Browser -> FrameDiagnosticPage.Browser
     AppRoute.Terminal -> FrameDiagnosticPage.Terminal
     AppRoute.Tools -> FrameDiagnosticPage.Tools
@@ -18,6 +17,7 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     AppRoute.Permissions -> FrameDiagnosticPage.Permissions
     AppRoute.SystemEnhance -> FrameDiagnosticPage.SystemEnhance
     AppRoute.Settings -> FrameDiagnosticPage.Settings
+    AppRoute.SettingsDetailEmpty -> FrameDiagnosticPage.Settings
     AppRoute.SettingsSearch -> FrameDiagnosticPage.Settings
     AppRoute.SystemTakeover -> FrameDiagnosticPage.Settings
     AppRoute.About -> FrameDiagnosticPage.Settings
@@ -48,9 +48,11 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     AppRoute.ModelProviderSearch -> FrameDiagnosticPage.ModelProviders
     AppRoute.McpServers -> FrameDiagnosticPage.McpServers
     is AppRoute.McpServerDetail -> FrameDiagnosticPage.McpServerDetail
+    AppRoute.McpServerAdd -> FrameDiagnosticPage.McpServerAdd
     is AppRoute.ModelProviderDetail -> FrameDiagnosticPage.ModelProviderDetail
     is AppRoute.ModelProviderAuthMethod -> FrameDiagnosticPage.ModelProviderAuthMethod
     is AppRoute.ModelProviderNew -> FrameDiagnosticPage.ModelProviderNew
+    is AppRoute.ModelProviderModelEdit -> FrameDiagnosticPage.ModelProviderModelEdit
     AppRoute.ContextCompression -> FrameDiagnosticPage.ContextCompression
     AppRoute.DecisionModel -> FrameDiagnosticPage.Settings
     is AppRoute.Assistants -> FrameDiagnosticPage.Assistants
@@ -70,6 +72,7 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     AppRoute.MobileActionsSettings -> FrameDiagnosticPage.Settings
     AppRoute.MobileActions -> FrameDiagnosticPage.Settings
     AppRoute.ToolRecipes -> FrameDiagnosticPage.ToolRecipes
+    is AppRoute.ToolRecipeEdit -> FrameDiagnosticPage.ToolRecipeEdit
     AppRoute.RemoteAgents -> FrameDiagnosticPage.Settings
     is AppRoute.RemoteAgentEditor -> FrameDiagnosticPage.Settings
 }
