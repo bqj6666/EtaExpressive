@@ -41,7 +41,11 @@ internal class AgentExecutionService : Service() {
         instance = this
         leases.attachOwner(owner)
         // 「前台收起运行卡」的翻转钩子：Eta 可见性变化时重估常驻卡（见 refreshNotification）。
-        AppForeground.onVisibilityChanged = { onAppVisibilityChanged() }
+        AppForeground.onVisibilityChanged = { visible ->
+            onAppVisibilityChanged()
+            // 回到前台就收掉结果卡：它是半屏悬浮窗，留着会吃掉下半屏触摸（界面能刷新但翻不动）。
+            if (visible) AgentRuntimeService.dismissResultCardForAppForeground()
+        }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL, getString(R.string.execution_channel), NotificationManager.IMPORTANCE_LOW),
@@ -183,7 +187,11 @@ internal class AgentExecutionService : Service() {
                 .setShowWhen(true)
                 .setUsesChronometer(true)
         }
-        if (status != null && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
+        // 只有 run 真在跑时才申请提升为 Live Update（状态栏胶囊与锁屏）。
+        // 跑完之后若仍挂着「不确定进度 + promoted ongoing」，系统会保留一个实时活动壳：
+        // 用户点开的是系统渲染的实时活动展开面板（内容是本卡文案，不是 Eta 界面），
+        // 那个面板本身不支持滚动，看起来就像「进了个不一样的界面且翻不动」。
+        if (streamActive && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
             builder
                 .setStyle(Notification.ProgressStyle().setProgressIndeterminate(true))
                 .setShortCriticalText(status.shortText())

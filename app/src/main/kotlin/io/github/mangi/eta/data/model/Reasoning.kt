@@ -21,7 +21,7 @@ enum class ReasoningEffort(
     OFF("off", R.string.effort_off, 0),
 
     @SerialName("default")
-    DEFAULT("default", R.string.effort_default, 1),
+    DEFAULT("default", R.string.effort_auto, 1),
 
     @SerialName("minimal")
     MINIMAL("minimal", R.string.effort_minimal, 2),
@@ -87,6 +87,10 @@ data class ModelReasoningCapabilities(
     val selectableEfforts: List<ReasoningEffort>
         get() = buildList {
             if (canDisable && !mandatory) add(ReasoningEffort.OFF)
+            // 「自动」= 不指定档位，由服务商自己决定。它必须始终可选：用户打开
+            // 「思考模式」时的默认落点就是它，被过滤掉会让 normalize(DEFAULT)
+            // 落进 canDisable 分支被打回 OFF。
+            add(ReasoningEffort.DEFAULT)
             supportedEfforts
                 .asSequence()
                 .filter { it != ReasoningEffort.OFF && it != ReasoningEffort.DEFAULT }
@@ -98,7 +102,11 @@ data class ModelReasoningCapabilities(
     fun normalize(requested: ReasoningEffort): ReasoningEffort {
         val selectable = selectableEfforts
         if (requested in selectable) return requested
-        if (requested == ReasoningEffort.OFF || requested == ReasoningEffort.DEFAULT) {
+        // 自动档单独处理：它是「不指定档位」，不是「关闭推理」，不能落到 OFF。
+        if (requested == ReasoningEffort.DEFAULT) {
+            return defaultEffort?.takeIf { it in selectable } ?: ReasoningEffort.DEFAULT
+        }
+        if (requested == ReasoningEffort.OFF) {
             return when {
                 canDisable && !mandatory -> ReasoningEffort.OFF
                 supportedEfforts.isEmpty() && mandatory -> ReasoningEffort.DEFAULT

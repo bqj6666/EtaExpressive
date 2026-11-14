@@ -2253,7 +2253,11 @@ internal class AgentAppState(
         providerId: String,
         modelId: String,
         stored: ReasoningEffort?,
-    ): ReasoningEffort = modelReasoningMemory[modelReasoningKey(providerId, modelId)] ?: stored ?: ReasoningEffort.OFF
+    ): ReasoningEffort = modelReasoningMemory[modelReasoningKey(providerId, modelId)]
+        ?: stored
+        // 既没记忆也没存过，就跟随设置里的「思考模式」：开启 = 自动档，关闭 = OFF。
+        // 原先这里直接给 OFF，等于把设置里的默认开启彻底忽略。
+        ?: ReasoningEffort.fromLegacy(defaultThinkingEnabled)
 
     private fun rememberModelReasoningEffort(providerId: String, modelId: String, effort: ReasoningEffort) {
         if (providerId.isBlank() || modelId.isBlank()) return
@@ -9266,10 +9270,11 @@ internal class AgentAppState(
                 providerId = currentBoundProviderId(),
                 modelId = currentBoundModelId(),
                 assistantId = currentBoundAssistantId(),
-                reasoningEffort = homeState.reasoningEffort,
-                thinkingEnabled = homeState.reasoningEffort.enablesReasoning,
-                availableReasoningEfforts = currentReasoningCapabilities?.selectableEfforts.orEmpty(),
-            ).withCurrentGptSpeedBinding()
+            )
+                // 档位不继承「当前会话」，而是取这个模型的偏好档位（含设置里的思考模式默认值）：
+                // 原先整段抄 homeState.reasoningEffort，只要当前会话是关闭的，新建的每一轮都是关闭。
+                .withPreferredReasoningEffort()
+                .withCurrentGptSpeedBinding()
 
     private fun restoreConversationRuntimeModel() {
         modelBindingGeneration++

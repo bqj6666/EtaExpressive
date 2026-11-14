@@ -290,6 +290,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
         AgentDispatchRuntime.coordinator = dispatchCoordinator
         // 重启对账：armed 判死发声、queued 重新派发（见 AgentDispatchCoordinator.recoverClaims）。
         lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -475,6 +476,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         // Losing the presentation/service is not consent to stop children. Keep their snapshots
         // and pending choices; a replacement service must not receive a deferred global stop.
         destroyed = true
+        if (activeInstance === this) activeInstance = null
         setKeepScreenOn(false)
         resultWorker.close()
         val retiring = sessions.snapshot()
@@ -2332,6 +2334,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun showResultCard(wm: WindowManager, session: AgentRuntimeSession) {
+        // 用户已经在看 Eta 本体，结果卡没有存在意义；而它是「底部半屏 + NOT_TOUCH_MODAL」的窗口，
+        // 挂在应用上方会承接窗口范围内的触摸，表现就是「AI 还在回、界面也在刷新，但下半屏翻不动」。
+        if (io.github.mangi.eta.ui.haptics.AppForeground.isForeground) return
         if (overlaySession !== session ||
             !AgentOverlayVisibilityPolicy.shouldShowResultCard(
                 session.taskSurfaceMode, hasExecutedForegroundTool, virtualDisplayActive(),
@@ -2752,6 +2757,17 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     companion object {
+        @Volatile
+        private var activeInstance: AgentRuntimeService? = null
+
+        /** Eta 回到前台时收掉结果卡：半屏悬浮窗会吃掉下半屏触摸，导致界面翻不动。 */
+        internal fun dismissResultCardForAppForeground() {
+            val service = activeInstance ?: return
+            service.mainHandler.post {
+                if (service.resultCardView != null) service.dismissResultCard()
+            }
+        }
+
         /** 只投影到 App 与 GUI 浮层的现有窗口；窗口不可见时由系统自行恢复息屏。 */
         private val keepScreenOnState = MutableStateFlow(false)
         internal val keepScreenOn = keepScreenOnState.asStateFlow()
