@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.app
 
 import android.widget.Toast
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalIconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LocalContentColor
@@ -46,6 +48,7 @@ import io.github.mangi.eta.ui.adaptive.EtaIconSize
 import io.github.mangi.eta.ui.adaptive.EtaMenuPopup
 import io.github.mangi.eta.ui.components.FooterTooltipBox
 import io.github.mangi.eta.ui.haptics.TouchHaptics
+import io.github.mangi.eta.ui.layout.rememberIsWideScreen
 
 /** 顶栏左右槽位宽：S 号圆钮 40dp + 与中间组的 8dp 间距。 */
 private val TopBarSideSlotWidth = 48.dp
@@ -61,6 +64,9 @@ private val TopBarSideSlotWidth = 48.dp
 internal fun Material3HomeTopBar(
     title: String,
     onOpenConversationPane: () -> Unit,
+    /** 宽屏下会话侧栏并排展开时为 true：汉堡钮常驻选中（按下）态，收起后回常规圆钮。
+     *  仅宽屏（rememberIsWideScreen）呈现该态；窄屏抽屉是模态遮罩，打开时不呈现选中外观。 */
+    isConversationPaneOpen: Boolean = false,
     onRenameCurrentConversation: () -> Unit,
     /**
      * 当前聊天目标是否为远程智能体会话（`ChatTarget.Remote` 精确匹配）。
@@ -110,23 +116,84 @@ internal fun Material3HomeTopBar(
             .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
         // 左侧：会话侧栏入口，固定贴 Start（RTL 下自动翻转为右侧语义）。
-        // 顶栏圆钮属「单个但重要的操作」：按官方 M3E 建议开启按压 morph（IconButtonDefaults.shapes()），
-        // 并包官方 TooltipBox（长按出提示气泡，复用消息操作条的 FooterTooltipBox 同款封装）。
+        // 顶栏圆钮属「单个但重要的操作」：按官方 M3E 建议开启按压 morph，并包官方 TooltipBox
+        // （长按出提示气泡，复用消息操作条的 FooterTooltipBox 同款封装）。
+        // 宽屏侧栏并排展开期间（paneDockedOpen = rememberIsWideScreen() && isConversationPaneOpen，
+        // 仅宽屏呈现，窄屏抽屉为模态遮罩不呈现）按钮常驻「按下」态：官方
+        // FilledTonalIconToggleButton 的 checked 驱动形状 morph 到 checkedShape、颜色切 checked
+        // 槽；按压时 pressedShape 优先，与 checkedShape 同为 CornerSmall，无二次跳变只出涟漪。
+        // 取证 material3 1.5.0-alpha29 sources（~/.gradle/sources/androidx.compose.material3_
+        // material3-android_1.5.0-alpha29/.../material3/）：
+        // - IconButton.kt:893 expressive 重载（shapes 第 3 参）；:1571-1638 shapeByInteraction
+        //   按 pressed→checked→静息取形状，rememberAnimatedShape + MotionSchemeKeyTokens
+        //   .DefaultEffects（无回弹）在 CornerBasedShape 间 morph；:1412-1420 checked 颜色走
+        //   rememberUpdatedState 瞬切（官方无 checked 颜色渐变，morph 承载动画）；:1219-1248
+        //   SurfaceIconToggleButton 承载，role = Checkbox 语义。
+        // - IconButtonDefaults.kt:1026-1035 toggleableShapes 三槽可覆写，默认 checkedShape =
+        //   CornerMedium（:1047-1056）≠ 按下形状，故覆写为官方 pressed 令牌
+        //   IconButtonDefaults.shapes().pressedShape（SmallIconButtonTokens
+        //   .PressedContainerShape = CornerSmall 8dp）。
+        // - IconButtonDefaults.kt:477-493 filledTonalIconToggleButtonColors 承载配色；选中色对齐
+        //   侧栏历史对话选中行（ConversationSidePaneScaffold.kt 会话行 selected 态：
+        //   tertiaryContainer 底 + 官方槽位内容色 onTertiaryContainer，本机/远程行同源）。官方
+        //   checked 颜色为 rememberUpdatedState 瞬切（IconButton.kt:1412-1420），调用处用
+        //   animateColorAsState 补过渡：spec 取 motionScheme.defaultEffectsSpec()（MotionScheme
+        //   .kt:91，与形状 morph 内部 MotionSchemeKeyTokens.DefaultEffects 同令牌，无回弹），
+        //   动画值同喂静息槽与 checked 槽，展开/收起双向平滑。
+        // 未选中外观与原 EtaIconButton(SurfaceHighest) 逐 token 对齐（EtaExpressiveKit.kt
+        // SurfaceHighest 分支即 FilledTonalIconButton + filledTonalIconButtonColors(
+        // surfaceContainerHighest, onSurface) + smallContainerSize/smallIconSize）。
         Box(modifier = Modifier.align(Alignment.CenterStart)) {
             val historyDescription = stringResource(R.string.action_conversation_history)
+            // 常驻按下（选中）态只给宽屏平板端：宽屏下侧栏并排停靠、汉堡钮始终可见，选中态
+            // 有承载；窄屏抽屉是模态遮罩（打开即盖住顶栏），不存在停靠形态，不呈现选中外观。
+            // 形状 morph 与配色动画统一以该 gate 值驱动。
+            val paneDockedOpen = rememberIsWideScreen() && isConversationPaneOpen
+            // 选中（侧栏展开）配色与侧栏历史对话选中行同款：tertiaryContainer 底 +
+            // onTertiaryContainer 内容（含 Icon 的内容色一并切换）。官方 checked 颜色瞬切，
+            // 调用处 animateColorAsState 补过渡（取证见上方注释块），展开/收起双向平滑。
+            val paneToggleContainer by animateColorAsState(
+                targetValue = if (paneDockedOpen) {
+                    MaterialTheme.colorScheme.tertiaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHighest
+                },
+                animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                label = "home_top_bar_pane_toggle_container",
+            )
+            val paneToggleContent by animateColorAsState(
+                targetValue = if (paneDockedOpen) {
+                    MaterialTheme.colorScheme.onTertiaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                label = "home_top_bar_pane_toggle_content",
+            )
             FooterTooltipBox(text = historyDescription, enabled = true) {
-                EtaIconButton(
-                    icon = Icons.Rounded.Menu,
-                    contentDescription = historyDescription,
-                    onClick = {
+                FilledTonalIconToggleButton(
+                    checked = paneDockedOpen,
+                    onCheckedChange = {
                         TouchHaptics.click(view)
                         onOpenConversationPane()
                     },
-                    size = EtaIconSize.S,
-                    // 与会话侧栏顶部胶囊同款配色 token（surfaceContainerHighest / onSurface）。
-                    style = EtaButtonStyle.SurfaceHighest,
-                    shapes = IconButtonDefaults.shapes(),
-                )
+                    shapes = IconButtonDefaults.toggleableShapes(
+                        checkedShape = IconButtonDefaults.shapes().pressedShape,
+                    ),
+                    colors = IconButtonDefaults.filledTonalIconToggleButtonColors(
+                        containerColor = paneToggleContainer,
+                        contentColor = paneToggleContent,
+                        checkedContainerColor = paneToggleContainer,
+                        checkedContentColor = paneToggleContent,
+                    ),
+                    modifier = Modifier.size(IconButtonDefaults.smallContainerSize()),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Menu,
+                        contentDescription = historyDescription,
+                        modifier = Modifier.size(IconButtonDefaults.smallIconSize),
+                    )
+                }
             }
         }
         // 中间组：左右各预留一个对称槽位，保证严格以屏幕（可用宽度）中线居中；

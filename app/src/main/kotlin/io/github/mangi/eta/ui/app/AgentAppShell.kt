@@ -189,6 +189,7 @@ internal fun AgentAppShell(
                             scrollBehavior = scrollBehavior,
                             onBack = onBack,
                             onOpenConversationPane = onToggleConversationPane,
+                            isConversationPaneOpen = isConversationPaneOpen,
                             onNewConversation = onNewConversation,
                             isRemoteTarget = isRemoteTarget,
                             showBackToConsole = showBackToConsole,
@@ -294,6 +295,8 @@ private fun AgentTopBar(
     scrollBehavior: TopAppBarScrollBehavior,
     onBack: () -> Unit,
     onOpenConversationPane: () -> Unit,
+    /** 宽屏下会话侧栏并排展开时为 true：首页汉堡钮常驻选中（按下）态。 */
+    isConversationPaneOpen: Boolean = false,
     onNewConversation: () -> Unit,
     /** 当前聊天目标是否为远程智能体会话：首页右槽走「新建会话」分支。 */
     isRemoteTarget: Boolean = false,
@@ -352,6 +355,7 @@ private fun AgentTopBar(
         Material3HomeTopBar(
             title = titleForRoute(route, currentConversationTitle),
             onOpenConversationPane = onOpenConversationPane,
+            isConversationPaneOpen = isConversationPaneOpen,
             onRenameCurrentConversation = onRenameCurrentConversation,
             isRemoteTarget = isRemoteTarget,
             onNewConversation = onNewConversation,
@@ -431,7 +435,9 @@ private fun titleForRoute(route: AppRoute?, currentConversationTitle: String? = 
     is AppRoute.LiveActivitySettings -> stringResource(R.string.live_activity_settings_title)
     is AppRoute.TtsSettings -> stringResource(R.string.tts_title)
     is AppRoute.WebToolsSettings -> stringResource(R.string.web_tools_settings_title)
-    is AppRoute.MijiaSettings -> "米家直连"
+    is AppRoute.MijiaSettings -> stringResource(R.string.mijia_title)
+    is AppRoute.MijiaOAuth -> stringResource(R.string.mijia_oauth_title)
+    is AppRoute.MijiaSearch -> stringResource(R.string.mijia_search_label)
     is AppRoute.VoiceModeSettings -> stringResource(R.string.voice_mode_title)
     is AppRoute.AppearanceSettings -> stringResource(R.string.appearance_title)
     is AppRoute.DataBackup -> stringResource(R.string.data_backup_title)
