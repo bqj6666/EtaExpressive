@@ -141,7 +141,10 @@ internal sealed interface AgentDecisionQuestion {
         val instructions: String,
         val criteria: Map<String, String>,
     ) : AgentDecisionQuestion {
-        override val type: String get() = "multi-choice"
+        // 平台协议只认 choice / noul / score，`multi-choice` 会让整包被判 JEV_INVALID_REQUEST
+        // （表现为 http_422 + 降级「本轮按全量工具放行」）。这里仍按多选语义建模，
+        // 线上统一用 choice 发；单选项答案在 parseAnswers 里还原成单元素集合。
+        override val type: String get() = "choice"
         override val labels: Set<String> get() = criteria.keys
 
         override fun toJson(): JSONObject = JSONObject()
@@ -456,11 +459,12 @@ internal object AgentDecisionModelClient {
                 }
 
                 is AgentDecisionQuestion.MultiChoice -> {
+                    // 线上题型是 choice，正常只回一个 `choice`；兼容旧 multi-choice 的 `choices` 数组。
                     val choices = answer.optJSONArray("choices")?.let { array ->
                         val result = mutableSetOf<String>()
                         for (index in 0 until array.length()) result.add(array.optString(index))
                         result
-                    }.orEmpty()
+                    } ?: answer.optString("choice").takeIf { it.isNotBlank() }?.let { setOf(it) }.orEmpty()
                     require(choices.all { it in question.labels }) {
                         "${question.id} 勾选含未声明标签：${choices - question.labels}"
                     }
