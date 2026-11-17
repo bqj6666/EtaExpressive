@@ -359,15 +359,24 @@ internal object AgentDecisionModelClient {
                 latencyMs = latency,
                 detail = body.take(200),
             )
+        // 成功信封有两种，都要认：
+        //   1) JEV 原生（/v1/decision、/v1/systemone）：{"answers": {...}}，没有 errorCode 字段；
+        //   2) 旧 errorCode 信封：{"errorCode": 0, "answers": {...}}。
+        // 之前只认第二种，JEV 返回 200 + answers 也会被判成「响应不符合协议 · missing_error_code」。
         val errorCode = root.optInt("errorCode", MISSING_ERROR_CODE)
-        if (errorCode == MISSING_ERROR_CODE) {
+        if (errorCode == MISSING_ERROR_CODE && !root.has("answers")) {
+            // JEV 的错误信封是 {"code":"JEV_...","message":"..."}，同样没有 errorCode。
+            val code = root.optString("code").takeIf { it.isNotBlank() }
             return AgentDecisionOutcome.Failure(
-                reason = "missing_error_code",
+                reason = code?.lowercase()?.take(48) ?: "missing_error_code",
                 httpStatus = status,
+                errorDesc = root.optString("message").takeIf { it.isNotBlank() } ?: code.orEmpty(),
+                // 把原始 body 前 200 字带上：信封不认识时能直接看出对方到底返回了什么。
+                detail = body.take(200),
                 latencyMs = latency,
             )
         }
-        if (errorCode != 0) {
+        if (errorCode != MISSING_ERROR_CODE && errorCode != 0) {
             return AgentDecisionOutcome.Failure(
                 reason = "error_code_$errorCode",
                 httpStatus = status,
@@ -382,7 +391,7 @@ internal object AgentDecisionModelClient {
                 return AgentDecisionOutcome.Failure(
                     reason = "invalid_answer",
                     httpStatus = status,
-                    errorCode = errorCode,
+                    errorCode = errorCode.takeIf { it != MISSING_ERROR_CODE },
                     latencyMs = latency,
                     detail = error.message.orEmpty(),
                 )
