@@ -228,7 +228,7 @@ internal sealed interface AgentDecisionOutcome {
  * 独立决策客户端：只实现 `POST /v1/systemone`，不复用聊天客户端的
  * messages / responses 语义，也不做流式。
  *
- * 请求体按契约构造：`model` / `state`（对象）/ `questions` / `options.dag`。
+ * 请求体按平台协议构造：顶层只有 `model` / `state`（对象）/ `questions`。
  * HTTP 非 200 与 `errorCode != 0` 都视为失败；答案逐字段校验（类型、标签、概率范围）。
  */
 internal object AgentDecisionModelClient {
@@ -239,7 +239,6 @@ internal object AgentDecisionModelClient {
         config: AgentDecisionClientConfig,
         state: JSONObject,
         questions: List<AgentDecisionQuestion>,
-        dagEdges: Map<String, List<String>> = emptyMap(),
     ): AgentDecisionOutcome = withContext(Dispatchers.IO) {
         val url = AgentDecisionEndpoint.resolve(config.baseUrl)
             ?: return@withContext AgentDecisionOutcome.Failure(
