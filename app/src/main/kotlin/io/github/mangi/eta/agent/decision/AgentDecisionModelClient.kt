@@ -1,5 +1,7 @@
 package io.github.mangi.eta.agent.decision
 
+import io.github.mangi.eta.config.Prefs
+
 import io.github.mangi.eta.agent.model.AgentHttpClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -248,7 +250,7 @@ internal object AgentDecisionModelClient {
             return@withContext AgentDecisionOutcome.Failure(reason = "missing_model")
         }
 
-        val payload = buildPayload(config, state, questions, dagEdges)
+        val payload = buildPayload(config, state, questions)
         val startedAt = System.nanoTime()
         val request = Request.Builder()
             .url(url)
@@ -298,23 +300,41 @@ internal object AgentDecisionModelClient {
         config: AgentDecisionClientConfig,
         state: JSONObject,
         questions: List<AgentDecisionQuestion>,
-        dagEdges: Map<String, List<String>>,
     ): JSONObject {
         val questionObject = JSONObject()
         questions.forEach { question -> questionObject.put(question.id, question.toJson()) }
-        val edges = JSONObject()
-        dagEdges.forEach { (downstream, upstream) ->
-            if (upstream.isEmpty()) return@forEach
-            edges.put(downstream, JSONObject().put("depends", JSONArray().also { array ->
-                upstream.forEach { dependency -> array.put(dependency) }
-            }))
+        // 平台协议（/v1/decision、/v1/systemone）顶层只有 model / state / questions。
+        // 早期这里还写 options.dag.edges（多题时每道题再带 depends），基元律动 JEV 的校验器
+        // 直接判 JEV_INVALID_REQUEST —— 官方文档里没有 options / dag / edges / depends 任何一项。
+        val custom = runCatching { Prefs.getString(Prefs.Keys.AGENT_DECISION_CUSTOM_BODY) }
+            .getOrDefault("")
+            .trim()
+        if (custom.isNotEmpty()) {
+            customBodyOrNull(custom, config.model, state, questionObject)?.let { return it }
         }
         return JSONObject()
             .put("model", config.model)
             .put("state", state)
             .put("questions", questionObject)
-            .put("options", JSONObject().put("dag", JSONObject().put("edges", edges)))
     }
+
+    /** 自定义模板：先做占位符替换再解析；不是合法 JSON 返回 null，由调用方回落内置请求体。 */
+    private fun customBodyOrNull(
+        template: String,
+        model: String,
+        state: JSONObject,
+        questions: JSONObject,
+    ): JSONObject? = runCatching {
+        val filled = template
+            .replace(PH_MODEL, model)
+            .replace(PH_STATE, state.toString())
+            .replace(PH_QUESTIONS, questions.toString())
+        JSONObject(filled)
+    }.getOrNull()
+
+    private const val PH_MODEL = "{{" + "model" + "}}"
+    private const val PH_STATE = "{{" + "state" + "}}"
+    private const val PH_QUESTIONS = "{{" + "questions" + "}}"
 
     private fun handleResponse(
         response: Response,
