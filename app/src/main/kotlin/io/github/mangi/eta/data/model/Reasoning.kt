@@ -87,10 +87,13 @@ data class ModelReasoningCapabilities(
     val selectableEfforts: List<ReasoningEffort>
         get() = buildList {
             if (canDisable && !mandatory) add(ReasoningEffort.OFF)
-            // 「自动」= 不指定档位，由服务商自己决定。它必须始终可选：用户打开
-            // 「思考模式」时的默认落点就是它，被过滤掉会让 normalize(DEFAULT)
-            // 落进 canDisable 分支被打回 OFF。
-            add(ReasoningEffort.DEFAULT)
+            // 「自动」= 不指定档位，由服务商自己决定。
+            // 只对**确实支持推理**的模型提供：不支持推理的模型若也给出 DEFAULT，
+            // normalize(OFF) 会落到 DEFAULT，下游 applyProviderDefault() 就会给
+            // 这种模型塞推理参数（「没开推理却仍发思考参数」的来源）。
+            if (supportedEfforts.isNotEmpty() || mandatory || defaultEffort != null) {
+                add(ReasoningEffort.DEFAULT)
+            }
             supportedEfforts
                 .asSequence()
                 .filter { it != ReasoningEffort.OFF && it != ReasoningEffort.DEFAULT }
@@ -103,14 +106,20 @@ data class ModelReasoningCapabilities(
         val selectable = selectableEfforts
         if (requested in selectable) return requested
         // 自动档单独处理：它是「不指定档位」，不是「关闭推理」，不能落到 OFF。
+        // 但若该模型压根不支持推理（selectable 里没有 DEFAULT），回到上游语义。
         if (requested == ReasoningEffort.DEFAULT) {
-            return defaultEffort?.takeIf { it in selectable } ?: ReasoningEffort.DEFAULT
+            val providerDefault = defaultEffort?.takeIf { it in selectable }
+            if (providerDefault != null) return providerDefault
+            if (ReasoningEffort.DEFAULT in selectable) return ReasoningEffort.DEFAULT
+            return if (mandatory) ReasoningEffort.DEFAULT else ReasoningEffort.OFF
         }
         if (requested == ReasoningEffort.OFF) {
             return when {
                 canDisable && !mandatory -> ReasoningEffort.OFF
                 supportedEfforts.isEmpty() && mandatory -> ReasoningEffort.DEFAULT
-                else -> selectable.firstOrNull { it != ReasoningEffort.OFF } ?: ReasoningEffort.OFF
+                // 不能关闭时回落到「最低档」，而不是新加的自动档：保持与上游一致的收敛语义。
+                else -> selectable.firstOrNull { it != ReasoningEffort.OFF && it != ReasoningEffort.DEFAULT }
+                    ?: ReasoningEffort.DEFAULT
             }
         }
         return selectable
