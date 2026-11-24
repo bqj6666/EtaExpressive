@@ -88,12 +88,10 @@ data class ModelReasoningCapabilities(
         get() = buildList {
             if (canDisable && !mandatory) add(ReasoningEffort.OFF)
             // 「自动」= 不指定档位，由服务商自己决定。
-            // 只对**确实支持推理**的模型提供：不支持推理的模型若也给出 DEFAULT，
-            // normalize(OFF) 会落到 DEFAULT，下游 applyProviderDefault() 就会给
-            // 这种模型塞推理参数（「没开推理却仍发思考参数」的来源）。
-            if (supportedEfforts.isNotEmpty() || mandatory || defaultEffort != null) {
-                add(ReasoningEffort.DEFAULT)
-            }
+            // 只要模型带了能力表就提供（哪怕 supportedEfforts 为空）：
+            // 自定义 provider（能力表为空）也需要这一档，否则用户看不到「自动」。
+            // 之前担心 normalize(OFF) 落到 DEFAULT，已由下方 OFF 分支显式排除 DEFAULT 解决。
+            add(ReasoningEffort.DEFAULT)
             supportedEfforts
                 .asSequence()
                 .filter { it != ReasoningEffort.OFF && it != ReasoningEffort.DEFAULT }
