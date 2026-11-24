@@ -32,6 +32,7 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.skill.SkillIndexEntry
 import io.github.mangi.eta.agent.skill.SkillRuntime
+import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.model.AssistantPrompt
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AgentMemoryStore
@@ -152,74 +153,50 @@ internal fun AssistantEditScreen(
     }
 
     fun save() {
-        // 人格（eta-assistants/index.json）与记忆（MEMORY.md）是两套互不相干的存储。
-        // 旧实现把 memoryRevision.isBlank() 当成保存前置条件：只要 MEMORY.md 不存在或读取失败，
-        // 提示词就永远存不进去，而且这里是静默 return —— 表现为「保存按钮亮着但点了没反应」，
-        // 文件 mtime 不变、日志为零、连存储锁都没拿到。现在只有「记忆超限」才拦保存。
-        if (saving) return
-        if (memoryOverLimit) {
-            io.github.mangi.eta.core.AndroidAgentLogger.warn(
-                "assistant-save abort: memory over limit bytes=$memoryBytes"
-            )
-            android.widget.Toast.makeText(
-                context,
-                context.getString(R.string.memory_over_limit),
-                android.widget.Toast.LENGTH_LONG,
-            ).show()
-            return
-        }
-        if (!dirty) return
+        // 人格（eta-assistants/index.json）与记忆（MEMORY.md）是两套互不相干的存储：
+        // 各自保存、各自报错，记忆一侧的乐观锁冲突不再连带吞掉提示词的落盘。
+        // 旧实现曾把 memoryRevision.isBlank() 当保存前置条件：记忆快照加载失败时
+        // 提示词永远存不进去且零日志（「保存按钮亮着但点了没反应」）。现在门禁只拦
+        // 「记忆超限 / 保存中」；而 baseRevision 空串只会来自加载失败——首建的
+        // revision 是 sha256("") 非空——所以带锁 replaceAll 在该场景抛 MEMORY_CONFLICT
+        // 走失败通道，拒绝盲写覆盖，等用户重载后再存。
+        if (!dirty || saving || memoryOverLimit) return
         val targetMemory = memoryDraft
         val baseRevision = memoryRevision
         val targetProfile = original.copy(name = name, prompt = prompt, avatarFileName = avatarFileName,
             memoryEnabled = memoryEnabled, enabledSkillIds = enabledSkillIds.toList(),
             toolGroupSwitches = toolSwitches)
         val memoryChanged = targetMemory != memorySaved
-        io.github.mangi.eta.core.AndroidAgentLogger.info(
-            "assistant-save start id=$assistantId dirty=true memoryChanged=$memoryChanged " +
-                "revisionBlank=${baseRevision.isBlank()} promptChars=${targetProfile.prompt.length}"
-        )
         saving = true
         scope.launch {
-            var savedSnapshot: io.github.mangi.eta.data.repository.AgentMemorySnapshot? = null
-            val result = withContext(Dispatchers.IO) {
+            // 记忆：只在真有改动时写，带 revision 乐观锁。
+            val memoryResult = if (memoryChanged) withContext(Dispatchers.IO) {
+                runCatching { AgentMemoryRepository.replaceAll(targetMemory, assistantId, baseRevision) }
+            } else null
+            // 提示词：与记忆互不相干，记忆失败也照常落盘。
+            val promptResult = withContext(Dispatchers.IO) {
                 runCatching {
-                    // 记忆没改动就不碰记忆存储；改动时 revision 为空表示还没有 MEMORY.md，
-                    // 走无 revision 的写入（null = 不做并发校验），而不是直接拒绝保存。
-                    if (memoryChanged) {
-                        savedSnapshot = AgentMemoryRepository.replaceAll(
-                            targetMemory,
-                            assistantId,
-                            baseRevision.ifBlank { null },
-                        )
-                    }
                     AssistantRepository.update(targetProfile)
                     RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
                 }
             }
-            savedSnapshot?.let { snapshot ->
+            memoryResult?.getOrNull()?.let { snapshot ->
                 memoryRevision = snapshot.revision
                 memorySaved = snapshot.content
             }
             saving = false
-            result.fold(
-                onSuccess = {
-                    io.github.mangi.eta.core.AndroidAgentLogger.info(
-                        "assistant-save ok id=$assistantId promptChars=${targetProfile.prompt.length}"
-                    )
-                    onBack()
-                },
-                onFailure = { error ->
-                    io.github.mangi.eta.core.AndroidAgentLogger.warn(
-                        "assistant-save failed id=$assistantId: ${error::class.java.simpleName}: ${error.message}"
-                    )
-                    android.widget.Toast.makeText(
-                        context,
-                        error.message ?: context.getString(R.string.aes_save_failed_draft_kept),
-                        android.widget.Toast.LENGTH_LONG,
-                    ).show()
-                },
-            )
+            val failure = memoryResult?.exceptionOrNull() ?: promptResult.exceptionOrNull()
+            if (failure == null) {
+                onBack()
+            } else {
+                // 失败必须留痕：旧版前置条件静默 return 的排障成本极高（零日志）。
+                io.github.mangi.eta.core.AndroidAgentLogger.warn(
+                    "assistant save failed: id=$assistantId memoryChanged=$memoryChanged " +
+                        "memoryError=${memoryResult?.exceptionOrNull()?.safeLogType()} " +
+                        "promptError=${promptResult.exceptionOrNull()?.safeLogType()}"
+                )
+                android.widget.Toast.makeText(context, failure.message ?: context.getString(R.string.aes_save_failed_draft_kept), android.widget.Toast.LENGTH_LONG).show()
+            }
         }
     }
 

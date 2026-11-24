@@ -125,7 +125,6 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.contentDescription
@@ -295,6 +294,9 @@ internal fun Material3ComposerBody(
      *  经令牌重组触发（听写已停时再按电源键的意图就是再录一句）；start() 幂等（在录时空操作），
      *  服务侧已过麦克风权限。 */
     dictationStartRequest: Int = 0,
+    /** 服务侧显式停听写令牌：预设 chip 提交前收声（cancel 是 × 语义：停麦+丢弃转写，
+     *  未录制时空操作）。只增不消账，每次 ++ 触发一次 cancel；主应用不传（默认 0）。 */
+    dictationStopRequest: Int = 0,
     /** 本实例视为已消费的令牌初值（进程级已消费水位播种）：主应用 composer 随切会话
      *  整树销毁重建、实例内记账随之丢失——调用方播种水位后，重建实例不再把旧令牌当成
      *  新唤起重放（否则每次切会话都误开听写）。浮窗不传：面板重建即重放是刻意设计。 */
@@ -302,8 +304,12 @@ internal fun Material3ComposerBody(
     /** 令牌消费上报：主应用侧转发到进程级水位（MainActivity.markInAppDictationConsumed），
      *  供后续重建实例播种；浮窗不传，重放语义不变。 */
     onDictationStartRequestConsumed: ((Int) -> Unit)? = null,
-    /** 听写会话在场状态回传（助手弹窗用它收起/恢复屏幕上下文快捷行）；首次组合也回传一次。 */
-    onDictationActiveChange: (Boolean) -> Unit = {},
+    /**
+     * 口述语音条当前的目标外框宽回传：null = 常规全宽；非 null = 收窄到该宽（听写 300 /
+     * ✓ 收尾 252）。助手弹窗据此把屏幕上下文 chip 行与语音条的**可见**宽度逐 dp 对齐。
+     * 首次组合也会回传一次。
+     */
+    onDictationBarWidthChange: ((Dp?) -> Unit)? = null,
     /** 系统选择器/权限跳板即将发起：助手弹窗据此让位（浮窗隐身+触摸穿透），
      *  否则跳板与选择器 Activity 都压在全屏 TYPE_APPLICATION_OVERLAY 之下无法交互。 */
     onSystemPickerLaunch: () -> Unit = {},
@@ -349,8 +355,8 @@ internal fun Material3ComposerBody(
     onCycleGptSpeedMode: () -> Unit,
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
+    /** 失败/断线续跑（RuntimeFailed 收尾）后的「继续」；暂停恢复已移除。 */
     onContinue: () -> Unit,
-    onAbortPausedRun: () -> Unit,
 ) {
     // 远程重连 / 失败：整颗输入框胶囊让位给状态胶囊——外形不变（36dp 同心圆角、官方
     // ContainerSize 高），整颗换成状态色，提示语顶替输入框，麦克风圆位由 LoadingIndicator
@@ -383,7 +389,6 @@ internal fun Material3ComposerBody(
         conversationMentions.pending.isNotEmpty()
     val sendMode = resolveChatComposerSendMode(
         isStreaming = isStreaming,
-        isPaused = isPaused,
         canContinueDisconnected = canContinueDisconnected,
         hasSteerContent = hasContent,
         canStartNewSend = canSend,
@@ -483,8 +488,14 @@ internal fun Material3ComposerBody(
         val wakeDictationPending = dictationStartRequest > consumedStartToken.intValue
         val dictating = voiceEntry == ComposerVoiceEntry.DICTATION &&
             (dictation.active || wakeDictationPending)
-        // 听写在场状态回传（弹窗收起/恢复屏幕上下文快捷行）：首次组合也回传，语音唤起的首帧就不画快捷行。
-        LaunchedEffect(dictating) { onDictationActiveChange(dictating) }
+        // 口述语音条的目标外框宽（null = 常规全宽）：听写 300、✓ 收尾 252。
+        // 回传给助手弹窗，让屏幕 chip 行与语音条可见宽度（扣两端 8dp 内容内边距）逐 dp 对齐。
+        val dictationBarWidthCap: Dp? = when {
+            dictation.finalizing -> ComposerVoiceFinalizingBarWidth
+            dictating -> ComposerVoiceBarWidth
+            else -> null
+        }
+        LaunchedEffect(dictationBarWidthCap) { onDictationBarWidthChange?.invoke(dictationBarWidthCap) }
         // 唤起方式=语音识别（助手弹窗）：弹窗落座即自动开录；面板在屏时再次唤起也经令牌
         // 重开（听写已停时再按电源键的意图就是再录一句）。start() 幂等：在录时空操作。
         // 服务侧已过麦克风权限；识别方式未配置时 start() 会原位给出「去配置」提示条。
@@ -497,6 +508,13 @@ internal fun Material3ComposerBody(
                 onDictationStartRequestConsumed?.invoke(dictationStartRequest)
                 if (voiceEntry == ComposerVoiceEntry.DICTATION) dictation.start()
             }
+        }
+
+        // 服务侧显式停听写：预设 chip 在听写条在屏时同样可点（chips 显隐不与听写互斥），
+        // 点 chip 的意图是从「口述」切到「识别屏幕」，听写必须让位。VoiceModeController.stop
+        // 不覆盖这条会话（听写在 composer 内部自持），所以用令牌穿透到这里 cancel。
+        LaunchedEffect(dictationStopRequest) {
+            if (dictationStopRequest > 0) dictation.cancel()
         }
         // 未配置识别引擎：沿用旧语音入口的失败提示（同一句文案），原位展示在胶囊槽位，
         // 尾部圆钮改成「去配置」。它不是一个会话：不占麦克风，也不再弹 toast。
@@ -826,7 +844,6 @@ internal fun Material3ComposerBody(
                             textFieldState = textFieldState,
                             focusRequester = focusRequester,
                             isStreaming = isStreaming,
-                            isPaused = isPaused,
                             // 左下角有 40dp 圆钮（编辑态取消 / 生成中加载）时留 48dp 起始占位；
                             // 失败旁路下加载圆钮立即让位，占位一并收回。
                             reserveLeadingSlot = (showMorphLoading && !morphLoadingFailVisible) || isEditingMessage,
@@ -966,7 +983,6 @@ internal fun Material3ComposerBody(
                         !isCompressingContext
                     val modeNow = resolveChatComposerSendMode(
                         isStreaming = isStreaming,
-                        isPaused = isPaused,
                         hasSteerContent = hasContentNow,
                         canStartNewSend = canStartNow,
                         isCompressingContext = isCompressingContext,
@@ -1086,11 +1102,9 @@ internal fun Material3ComposerBody(
                             // 想立刻送进当前运行则点队列项的闪电图标立即插话。
                             ComposerTrailing.SEND -> M3ComposerSendButton(
                                 sendMode = sendMode,
-                                isPaused = isPaused,
                                 onSend = sendDraft,
-                                onStop = onStop,
                                 onContinue = onContinue,
-                                onAbortPausedRun = onAbortPausedRun,
+                                onStop = onStop,
                                 onBlocked = blockedNotice,
                             )
                             // DICTATION 与 VOICE_ENTRY 渲染同一枚入口钮（contentKey 已归并，
@@ -1424,8 +1438,26 @@ private val ComposerVoiceButtonHeight = TextFieldDefaults.MinHeight
  *
  * 300 − 2×8 工具栏内边距 = 284；再扣两端 ×/✓（40 + 8 间距）= 胶囊 188dp，
  * 比输入态胶囊短一截，与参考稿「语音条比输入态短」的构图一致。
+ *
+ * 注意这只是**工具栏外框**宽；口述态外框色是透明的，屏幕上可见的 ×/✓ 总宽见
+ * [composerVoiceBarVisibleWidth]（入口浮窗的 chip 行要对齐的是后者）。
  */
-private val ComposerVoiceBarWidth = 300.dp
+internal val ComposerVoiceBarWidth = 300.dp
+
+/** 官方 `HorizontalFloatingToolbar` 的内容内边距（ContainerPadding = 8dp，双侧各一份）。 */
+private val ComposerFloatingToolbarContentPadding = 8.dp
+
+/**
+ * 口述语音条在给定输入区可用宽度与目标外框宽下的**可见**总宽（含左右 ×/✓）。
+ *
+ * 与 [AgentChatComposerM3] 内 `barWidth` 完全同一套几何：工具栏外框动画到
+ * `min(可用宽, barCap)` 后，内容再扣两端 8dp 官方 `ContentPadding`；口述态外框色
+ * 动画到透明，所以屏幕上看到的「× + 流光胶囊 + ✓」只铺满内容区，不会撑到外框边缘。
+ * 入口浮窗的屏幕 preset chip 行必须按这个宽度收窄，否则每边会多出 8dp。
+ */
+internal fun composerVoiceBarVisibleWidth(fullWidth: Dp, barCap: Dp): Dp =
+    (minOf(fullWidth, barCap) - ComposerFloatingToolbarContentPadding * 2)
+        .coerceAtLeast(0.dp)
 
 /**
  * ✓ 收尾态的语音条总宽：× 已退场、收尾圆缩进胶囊内部右侧同心位，只剩流光胶囊一根。
@@ -1434,7 +1466,7 @@ private val ComposerVoiceBarWidth = 300.dp
  * （胶囊 − 左 16 − 右 16+48 让位 = 156）与听写态完全一致，morph 途中文字不重排。
  * 工具栏 252 = 236 + 2×8 内边距。
  */
-private val ComposerVoiceFinalizingBarWidth = 252.dp
+internal val ComposerVoiceFinalizingBarWidth = 252.dp
 
 /**
  * 口述 morph 的几何过渡：原型 `.toolbar / .field / #voiceBtn` 全部是
@@ -1443,7 +1475,13 @@ private val ComposerVoiceFinalizingBarWidth = 252.dp
  * 不会像 Spatial 弹簧那样把 padding 冲成负值或把按钮顶出胶囊。
  */
 private val ComposerMorphEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
-private val ComposerMorphDpSpec: FiniteAnimationSpec<Dp> = tween(350, easing = ComposerMorphEasing)
+/**
+ * 口述 morph 的几何过渡规格：语音条宽度、胶囊让位共用。
+ *
+ * 入口浮窗的屏幕预设 chip 行在听写开始时也用它收窄，与语音条同一时长、同一曲线，
+ * 两侧宽度变化才是无缝同步的。
+ */
+internal val ComposerMorphDpSpec: FiniteAnimationSpec<Dp> = tween(350, easing = ComposerMorphEasing)
 
 /**
  * 尾部槽 AnimatedContent 容器尺寸（40×56 ⇄ 40×40）的形变曲线：与 [ComposerMorphDpSpec]
@@ -1481,18 +1519,11 @@ private val ComposerMorphIconSpec: FiniteAnimationSpec<Float> = tween(250, easin
 @Composable
 private fun composerHintText(
     isStreaming: Boolean,
-    /** 暂停态优先于「正在执行」：暂停的运行停在原地，提示必须说出来，否则用户不知道要按继续。 */
-    isPaused: Boolean,
     remoteAgentName: String?,
     assistantName: String,
 ): String {
     val displayName = (remoteAgentName ?: assistantName).trim()
     return when {
-        // 暂停态在 UI 上只有继续/停止按钮一个线索（消息流不动、加载指示器已让位），
-        // 输入框提示是最稳定的常驻位：把「已暂停 + 怎么恢复」写在这里。
-        isPaused && displayName.isNotEmpty() ->
-            stringResource(R.string.chat_eta_paused_named, displayName)
-        isPaused -> stringResource(R.string.chat_eta_paused_named, "Eta")
         isStreaming && displayName.isNotEmpty() ->
             stringResource(R.string.chat_eta_working_named, displayName)
         isStreaming -> stringResource(R.string.chat_eta_working)
@@ -1517,8 +1548,6 @@ private fun M3ComposerTextField(
     textFieldState: TextFieldState,
     focusRequester: FocusRequester,
     isStreaming: Boolean,
-    /** 暂停态提示语优先级最高：见 [composerHintText]。 */
-    isPaused: Boolean,
     /** 胶囊左下角是否有 40dp 圆钮；有则起始侧留同宽占位，避免多行文字压到圆钮上。 */
     reserveLeadingSlot: Boolean,
     /** 本机会话当前助手的名字；远程会话由 `LocalRemoteAgentName` 覆盖它。 */
@@ -1534,7 +1563,6 @@ private fun M3ComposerTextField(
             Text(
                 text = composerHintText(
                     isStreaming = isStreaming,
-                    isPaused = isPaused,
                     remoteAgentName = io.github.mangi.eta.ui.remote.LocalRemoteAgentName.current,
                     assistantName = assistantName,
                 ),
@@ -2423,23 +2451,24 @@ private data class ComposerMenuEntry(
 )
 
 /**
- * 发送 / 停止 / 继续 按钮：按状态直接选用官方图标按钮
- * （停止＝`FilledTonalIconButton`、发送/继续＝`FilledIconButton`、
+ * 发送 / 停止 按钮：按状态直接选用官方图标按钮
+ * （停止＝`FilledTonalIconButton`、发送＝`FilledIconButton`、
  * 上下文已满＝`OutlinedIconButton`、空闲＝禁用的 `IconButton`）。
  *
  * 形状、容器色、内容色与水波纹全部使用各组件的官方默认值，不传 `shape` / `colors`；
  * 按下不做任何自制视觉——按压缩放（0.9）已按用户 2026-11-11 决定移除，只留官方涟漪。
- * 官方图标按钮没有长按槽位（M3 仅 `ListItem` 暴露 `onLongClick`），因此“长按中止暂停中的运行”
- * 通过官方 `Modifier.semantics` 的 `onLongClick` 动作提供。
+ *
+ * 「暂停后的继续」不再是按钮态：用户可见的暂停已移除，停止即真停止。`continue` 态
+ * 只剩失败/断线（RuntimeFailed 收尾）后的续跑键（`canContinueDisconnected`），仍用
+ * 播放图标 + 专属文案，与「发送新消息」在视觉上区分开。
  */
 @Composable
 private fun M3ComposerSendButton(
     sendMode: String,
-    isPaused: Boolean,
     onSend: () -> Unit,
-    onStop: () -> Unit,
+    /** `continue`（失败续跑）态的点击回调；与发送草稿不同，它内部补占位 prompt 开新逻辑轮。 */
     onContinue: () -> Unit,
-    onAbortPausedRun: () -> Unit,
+    onStop: () -> Unit,
     onBlocked: () -> Unit,
 ) {
     val view = LocalView.current
@@ -2465,23 +2494,10 @@ private fun M3ComposerSendButton(
             "blocked" -> onBlocked()
             "stop" -> onStop()
             "continue" -> onContinue()
-            "send" -> onSend()
+            else -> onSend()
         }
     }
-    val abortModifier = if (sendMode == "stop" || (sendMode == "continue" && isPaused)) {
-        Modifier.semantics {
-            onLongClick(label = description) {
-                TouchHaptics.longPress(view)
-                onAbortPausedRun()
-                true
-            }
-        }
-    } else {
-        Modifier
-    }
-    val modifier = Modifier
-        .size(IconButtonDefaults.smallContainerSize())
-        .then(abortModifier)
+    val modifier = Modifier.size(IconButtonDefaults.smallContainerSize())
 
     when (sendMode) {
         "stop" -> FilledTonalIconButton(
@@ -2489,7 +2505,7 @@ private fun M3ComposerSendButton(
             modifier = modifier,
             content = content,
         )
-        "continue", "send" -> FilledIconButton(
+        "send", "continue" -> FilledIconButton(
             onClick = click,
             modifier = modifier,
             content = content,

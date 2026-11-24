@@ -4,6 +4,8 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
+import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.core.safeLogType
 import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -46,8 +48,8 @@ internal class EncryptedProviderCredentialStorage(context: Context) : ProviderCr
                 }
             }
         } catch (error: ProviderAuthException) {
-            io.github.mangi.eta.core.AndroidAgentLogger.warn(
-                "provider credential unreadable, treated as signed-out: ${error.message}"
+            AndroidAgentLogger.warn(
+                "provider credential unreadable, treated as signed-out: ${error.safeLogType()}"
             )
             null
         }

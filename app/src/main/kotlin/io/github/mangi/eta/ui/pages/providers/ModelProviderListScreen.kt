@@ -45,6 +45,7 @@ import io.github.mangi.eta.ui.adaptive.EtaGroupHorizontalPadding
 import io.github.mangi.eta.ui.adaptive.EtaScaffoldPage
 import io.github.mangi.eta.ui.adaptive.EtaSectionTitle
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedColumn
+import io.github.mangi.eta.ui.adaptive.EtaSegmentedItemContainer
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedGap
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedGroupSpacing
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedItem
@@ -350,14 +351,19 @@ internal fun androidx.compose.foundation.lazy.LazyListScope.materialProviderList
     }
 
     if (filteredProviders.isEmpty()) {
+        // 非整页零态走分段卡片做底板（全仓空态两档约定，见 EtaStatusPage KDoc）。
         item(key = "empty") {
-            ListEmptyState(
-                title = if (searchQuery.isBlank()) {
-                    stringResource(R.string.provider_empty)
-                } else {
-                    stringResource(R.string.provider_no_matches)
-                },
-            )
+            EtaSegmentedItemContainer(
+                modifier = Modifier.padding(horizontal = EtaGroupHorizontalPadding),
+            ) {
+                ListEmptyState(
+                    title = if (searchQuery.isBlank()) {
+                        stringResource(R.string.provider_empty)
+                    } else {
+                        stringResource(R.string.provider_no_matches)
+                    },
+                )
+            }
         }
     } else {
         items(
@@ -372,7 +378,15 @@ internal fun androidx.compose.foundation.lazy.LazyListScope.materialProviderList
                 // 分段间露出背景缝隙（EtaSegmentedGap），末项补足组间距（EtaSegmentedGroupSpacing）。
                 val isLast = index == filteredProviders.lastIndex
                 Column(
-                    modifier = Modifier.padding(
+                    // 官方 animateItem（会话管理页同款口径）：删除/进多选的行消失淡出 + 补位
+                    // 弹簧；入场不播动画，避免首屏全列表闪淡入。
+                    modifier = Modifier
+                        .animateItem(
+                            fadeInSpec = null,
+                            fadeOutSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                            placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                        )
+                        .padding(
                         start = EtaGroupHorizontalPadding,
                         end = EtaGroupHorizontalPadding,
                         bottom = if (isLast) EtaSegmentedGroupSpacing else EtaSegmentedGap,

@@ -44,6 +44,7 @@ import io.github.mangi.eta.ui.adaptive.EtaSearchHistory
 import io.github.mangi.eta.ui.adaptive.EtaSearchPage
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedGap
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedItem
+import io.github.mangi.eta.ui.adaptive.EtaSegmentedItemContainer
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedRow
 import io.github.mangi.eta.ui.adaptive.EtaSelectionAction
 import io.github.mangi.eta.ui.adaptive.EtaSelectionBar
@@ -134,10 +135,15 @@ internal fun TrashScreen(
         },
         content = {
             if (trash.isEmpty()) {
+                // 非整页零态走分段卡片做底板（全仓空态两档约定）。
                 item(key = "empty") {
-                    ListEmptyState(
-                        title = stringResource(R.string.drawer_trash_empty),
-                    )
+                    EtaSegmentedItemContainer(
+                        modifier = Modifier.padding(horizontal = EtaGroupHorizontalPadding),
+                    ) {
+                        ListEmptyState(
+                            title = stringResource(R.string.drawer_trash_empty),
+                        )
+                    }
                 }
             } else {
                 itemsIndexed(
@@ -146,7 +152,15 @@ internal fun TrashScreen(
                     contentType = { _, _ -> "trash-conversation" },
                 ) { index, conversation ->
                     Box(
-                        modifier = Modifier.padding(horizontal = EtaGroupHorizontalPadding),
+                        // 官方 animateItem（会话管理页同款口径）：恢复/彻底删除淡出，下方行弹簧补位；
+                        // 入场不播动画，避免首屏全列表闪淡入。
+                        modifier = Modifier
+                            .animateItem(
+                                fadeInSpec = null,
+                                fadeOutSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                                placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                            )
+                            .padding(horizontal = EtaGroupHorizontalPadding),
                     ) {
                         TrashRow(
                             conversation = conversation,
@@ -389,10 +403,15 @@ internal fun TrashSearchScreen(
     ) { query ->
         val hits = onSearch(query)
         if (hits.isEmpty()) {
+            // 非整页零态走分段卡片做底板（全仓空态两档约定）。
             item(key = "empty") {
-                ListEmptyState(
-                    title = stringResource(R.string.trash_search_empty),
-                )
+                EtaSegmentedItemContainer(
+                    modifier = Modifier.padding(horizontal = EtaGroupHorizontalPadding),
+                ) {
+                    ListEmptyState(
+                        title = stringResource(R.string.trash_search_empty),
+                    )
+                }
             }
         } else {
             itemsIndexed(
@@ -401,7 +420,14 @@ internal fun TrashSearchScreen(
                 contentType = { _, _ -> "trash-search-hit" },
             ) { index, conversation ->
                 Box(
-                    modifier = Modifier.padding(horizontal = EtaGroupHorizontalPadding),
+                    // 恢复/彻底删除淡出 + 补位弹簧（主回收站列表同款口径）。
+                    modifier = Modifier
+                        .animateItem(
+                            fadeInSpec = null,
+                            fadeOutSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                            placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                        )
+                        .padding(horizontal = EtaGroupHorizontalPadding),
                 ) {
                     // 搜索命中行不进多选：仍用常规行尾按钮（与改造前一致）。
                     TrashRow(

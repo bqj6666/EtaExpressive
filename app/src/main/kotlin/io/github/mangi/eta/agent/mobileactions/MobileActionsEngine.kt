@@ -58,6 +58,10 @@ internal object MobileActionsEngine {
     private var engine: Engine? = null
     private var enginePath: String? = null
     private var engineBackend: MobileActionsModelStore.Backend? = null
+    private var actualBackendName: String? = null
+
+    /** 本轮强制使用的后端（空输出重试时切 CPU）。 */
+    private var forcedBackend: MobileActionsModelStore.Backend? = null
 
     sealed interface Event {
         /** 首次运行需要加载模型（数秒），用于展示进度文案。 */
@@ -82,6 +86,7 @@ internal object MobileActionsEngine {
     fun run(context: Context, instruction: String): Flow<Event> = channelFlow {
         val app = context.applicationContext
         idleJob?.cancel()
+        var retriedWithCpu = false
         val file = MobileActionsModelStore.modelFile(app)
         io.github.mangi.eta.core.AndroidAgentLogger.info(
             "mobile-actions run: chars=${instruction.length} file=${file?.name ?: "null"} " +
@@ -92,82 +97,108 @@ internal object MobileActionsEngine {
             send(Event.Failure(app.getString(R.string.mobile_actions_not_ready)))
             return@channelFlow
         }
-        val outcomes = Collections.synchronizedList(
-            mutableListOf<Pair<MobileActionsAction, MobileActionsOutcome>>(),
-        )
         engineMutex.withLock {
-            // 只有真正需要重新初始化时才提示「加载模型」，热启动直接显示执行中。
-            val needsLoading = engine == null ||
-                enginePath != file.path ||
-                engineBackend != MobileActionsModelStore.backend(app)
-            if (needsLoading) send(Event.Preparing)
-            val ready = try {
-                ensureEngineLocked(app, file)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                io.github.mangi.eta.core.AndroidAgentLogger.warn(
-                    "mobile-actions engine init failed: ${error.javaClass.name}: ${error.message}"
+            while (true) {
+                val outcomes = Collections.synchronizedList(
+                    mutableListOf<Pair<MobileActionsAction, MobileActionsOutcome>>(),
                 )
-                send(Event.Failure(failureText(app, error)))
-                return@withLock
-            }
-            var reply = ""
-            var collected = 0
-            try {
-                io.github.mangi.eta.core.AndroidAgentLogger.info("mobile-actions conversation create")
-                ready.createConversation(
-                    ConversationConfig(
-                        systemInstruction = systemInstruction(),
-                        // 贪心采样：函数调用要求同一指令稳定落到同一动作。
-                        samplerConfig = SamplerConfig(
-                            topK = 1,
-                            topP = 1.0,
-                            temperature = 0.0,
-                            seed = 0,
-                        ),
-                        tools = listOf(
-                            tool(
-                                MobileActionsToolSet(app) { action, outcome ->
-                                    outcomes.add(action to outcome)
-                                },
+                val preferredNow = forcedBackend ?: MobileActionsModelStore.backend(app)
+                val needsLoading = engine == null ||
+                    enginePath != file.path ||
+                    engineBackend != preferredNow
+                if (needsLoading) send(Event.Preparing)
+                val ready = try {
+                    ensureEngineLocked(app, file)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    io.github.mangi.eta.core.AndroidAgentLogger.warn(
+                        "mobile-actions engine init failed: ${error.javaClass.name}: ${error.message}"
+                    )
+                    send(Event.Failure(failureText(app, error)))
+                    return@withLock
+                }
+                var reply = ""
+                var collected = 0
+                var rawMessages = 0
+                var contentSummary = ""
+                io.github.mangi.eta.core.AndroidAgentLogger.info(
+                    "mobile-actions engine ready: pref=${engineBackend} actual=${actualBackendName} path=${file.name}"
+                )
+                try {
+                    ready.createConversation(
+                        ConversationConfig(
+                            systemInstruction = systemInstruction(),
+                            // 贪心采样：函数调用要求同一指令稳定落到同一动作。
+                            samplerConfig = SamplerConfig(
+                                topK = 1,
+                                topP = 1.0,
+                                temperature = 0.0,
+                                seed = 0,
+                            ),
+                            tools = listOf(
+                                tool(
+                                    MobileActionsToolSet(app) { action, outcome ->
+                                        outcomes.add(action to outcome)
+                                    },
+                                ),
                             ),
                         ),
-                    ),
-                ).use { conversation ->
-                    val builder = StringBuilder()
-                    withTimeout(GENERATION_TIMEOUT_MS) {
-                        conversation.sendMessageAsync(instruction).collect { message ->
-                            // 0.18.0 的 Message 没有 text 属性，文本在 Contents 的 Text 片段里。
-                            val text = message.contents.contents
-                                .filterIsInstance<Content.Text>()
-                                .joinToString("") { it.text }
-                            if (text.isNotBlank()) {
-                                builder.append(text)
-                                collected += 1
+                    ).use { conversation ->
+                        val builder = StringBuilder()
+                        withTimeout(GENERATION_TIMEOUT_MS) {
+                            conversation.sendMessageAsync(instruction).collect { message ->
+                                // 0.18.0 的 Message 没有 text 属性，文本在 Contents 的 Text 片段里。
+                                val parts = message.contents.contents
+                                val text = parts.filterIsInstance<Content.Text>()
+                                    .joinToString("") { it.text }
+                                if (rawMessages < 5) {
+                                    val kinds = parts.joinToString("+") { it.javaClass.simpleName }
+                                    contentSummary += if (contentSummary.isEmpty()) kinds else ",$kinds"
+                                }
+                                rawMessages += 1
+                                if (text.isNotBlank()) {
+                                    builder.append(text)
+                                    collected += 1
+                                }
                             }
                         }
+                        reply = builder.toString().trim()
                     }
-                    reply = builder.toString().trim()
+                } catch (timeout: TimeoutCancellationException) {
+                    io.github.mangi.eta.core.AndroidAgentLogger.warn("mobile-actions generation timeout")
+                    send(Event.Failure(app.getString(R.string.mobile_actions_error_timeout)))
+                    return@withLock
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    io.github.mangi.eta.core.AndroidAgentLogger.warn(
+                        "mobile-actions generation failed: ${error.javaClass.name}: ${error.message}"
+                    )
+                    send(Event.Failure(failureText(app, error)))
+                    return@withLock
                 }
-            } catch (timeout: TimeoutCancellationException) {
-                io.github.mangi.eta.core.AndroidAgentLogger.warn("mobile-actions generation timeout")
-                send(Event.Failure(app.getString(R.string.mobile_actions_error_timeout)))
-                return@withLock
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                io.github.mangi.eta.core.AndroidAgentLogger.warn(
-                    "mobile-actions generation failed: ${error.javaClass.name}: ${error.message}"
+                io.github.mangi.eta.core.AndroidAgentLogger.info(
+                    "mobile-actions done: raw=$rawMessages chunks=$collected replyChars=${reply.length} " +
+                        "actions=${outcomes.size} kinds=${contentSummary.ifBlank { "-" }} backend=$actualBackendName"
                 )
-                send(Event.Failure(failureText(app, error)))
-                return@withLock
+                // GPU/NPU 在本机可能「初始化成功但一条消息都不产出」：这类静默空输出重试一次 CPU。
+                val emptyOutput = rawMessages == 0 && outcomes.isEmpty() && reply.isEmpty()
+                val alreadyCpu = actualBackendName?.equals("CPU", ignoreCase = true) == true
+                if (emptyOutput && !alreadyCpu && !retriedWithCpu) {
+                    retriedWithCpu = true
+                    io.github.mangi.eta.core.AndroidAgentLogger.warn(
+                        "mobile-actions empty output on $actualBackendName, retrying with CPU"
+                    )
+                    releaseLocked()
+                    forcedBackend = MobileActionsModelStore.Backend.CPU
+                    continue
+                }
+                forcedBackend = null
+                outcomes.forEach { (action, outcome) -> send(Event.Action(action, outcome)) }
+                if (reply.isNotEmpty()) send(Event.Reply(reply))
+                break
             }
-            io.github.mangi.eta.core.AndroidAgentLogger.info(
-                "mobile-actions done: chunks=$collected replyChars=${reply.length} actions=${outcomes.size}"
-            )
-            outcomes.forEach { (action, outcome) -> send(Event.Action(action, outcome)) }
-            if (reply.isNotEmpty()) send(Event.Reply(reply))
         }
         scheduleIdleRelease()
     }.flowOn(Dispatchers.Default.limitedParallelism(1))
@@ -189,7 +220,7 @@ internal object MobileActionsEngine {
     }
 
     private suspend fun ensureEngineLocked(context: Context, file: File): Engine {
-        val preferred = MobileActionsModelStore.backend(context)
+        val preferred = forcedBackend ?: MobileActionsModelStore.backend(context)
         engine?.let { existing ->
             if (enginePath == file.path && engineBackend == preferred) return existing
         }
@@ -229,6 +260,7 @@ internal object MobileActionsEngine {
             engine = candidate
             enginePath = file.path
             engineBackend = preferred
+            actualBackendName = backend.javaClass.simpleName
             return candidate
         }
         throw failure ?: IllegalStateException("Mobile actions engine unavailable")
@@ -236,6 +268,7 @@ internal object MobileActionsEngine {
 
     private fun releaseLocked() {
         runCatching { engine?.close() }
+        actualBackendName = null
         engine = null
         enginePath = null
         engineBackend = null
@@ -261,7 +294,9 @@ internal object MobileActionsEngine {
             Content.Text(
                 "Current date and time given in YYYY-MM-DDTHH:MM:SS format: $dateTime\n" +
                     "Day of week is $dayOfWeek\n" +
-                    "You are a model that can do function calling with the following functions",
+                    "You are a model that can do function calling with the following functions. " +
+                    "The user may write in Chinese or any other language; understand the intent and " +
+                    "always answer by calling the matching function — never refuse because of the language.",
             ),
         )
     }

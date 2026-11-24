@@ -18,6 +18,7 @@ import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.device.RootShellDeviceController
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
 import io.github.mangi.eta.agent.model.AgentMediaSearchToolCatalog
+import io.github.mangi.eta.agent.model.AgentPickupCodeToolCatalog
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentHttpClient
 import io.github.mangi.eta.agent.device.LocalNetworkPermission
@@ -122,6 +123,14 @@ internal class AgentLocalTools(
     private val screenObservationProvider: (
         (AgentScreenObservationContract.Options) -> RootShellDeviceController.Observation
     )? = null,
+    /**
+     * 唤醒时已采集、但前置判断没有加进消息的屏幕截图。
+     *
+     * 只在助手弹窗 run 且消息未附图的条件下注入；模型调用 `view_entry_screenshot`
+     * 时把它作为工具结果图片返回，省掉一次重新截屏（也可在屏幕已变化时改用
+     * observe_screen）。null = 本次运行没有可用的唤醒截图。
+     */
+    private val entryScreenImageProvider: (() -> AgentModelClient.ToolResult?)? = null,
     private val beforeToolExecution: (String) -> ToolExecutionDecision = {
         ToolExecutionDecision.Allow
     },
@@ -296,6 +305,7 @@ internal class AgentLocalTools(
     private val selfHistoryTools = AgentSelfHistoryTools(context, agentConversationId)
     private val selfMcpTools = AgentSelfMcpTools(context)
     private val mediaSearchTools = AgentMediaSearchTools(context)
+    private val pickupCodeTools = AgentPickupCodeTools(context)
     /** 自进化底座：模型可自行创建声明式配方（工具），配方即时注册为可调用工具。 */
     // 与设置页共用进程级唯一 store：用户停用/删除配方后，agent 侧立即看到，不会继续暴露已收回的工具。
     internal val recipeStore = AgentToolRecipeStore.get(context)
@@ -579,7 +589,8 @@ internal class AgentLocalTools(
             return textResult(
                 errorResult(
                     "TOOL_GROUP_NOT_LOADED",
-                    "工具「$requested」所属组 $groupId 还没加载。先调用 tools_use_group(group=$groupId) " +
+                    "工具「$requested」所属组 $groupId 还没加载（组的加载状态只在本次运行内有效，" +
+                        "历史里先前打开过不代表本次运行已打开）。先调用 tools_use_group(group=$groupId) " +
                         "或 tools_search，从回执的 tool_docs 确认工具名与参数后再用 tool_call 调用。",
                 ),
             )
@@ -1050,6 +1061,14 @@ internal class AgentLocalTools(
                     else textResult(webTools.execute(toolCall.name, args))
                 }
                 "observe_screen" -> observeScreen(args)
+                "view_entry_screenshot" -> entryScreenImageProvider?.invoke()
+                    ?: textResult(
+                        errorResult(
+                            code = "ENTRY_SCREEN_UNAVAILABLE",
+                            message = "本次运行没有可用的唤醒截图；如需查看屏幕，请调用 " +
+                                "observe_screen 并设置 include_screenshot=true。",
+                        )
+                    )
                 "tap" -> afterAction(tap(args))
                 "tap_area" -> afterAction(tapArea(args))
                 "tap_element" -> afterAction(tapElement(args))
@@ -1115,6 +1134,7 @@ internal class AgentLocalTools(
                 AgentSelfSettingsToolCatalog.CONFIGURE_MCP -> textResult(selfSettingsTool { selfMcpTools.execute(args) })
                 // 是否被禁用由 groupToolPermissionError 的单工具兜底统一裁决，无需专用门禁。
                 AgentMediaSearchToolCatalog.SEARCH_MEDIA -> textResult(mediaSearchTools.execute(args))
+                AgentPickupCodeToolCatalog.PICKUP_CODE -> textResult(pickupCodeTools.execute(args))
                 AgentSelfAuthorTools.AUTHOR_TOOL -> textResult(selfAuthorTool { selfAuthorTools.execute(AgentSelfAuthorTools.AUTHOR_TOOL, args) ?: "" })
                 AgentSelfAuthorTools.LIST_TOOLS -> textResult(selfAuthorTool { selfAuthorTools.execute(AgentSelfAuthorTools.LIST_TOOLS, args) ?: "" })
                 else -> textResult(
@@ -2116,6 +2136,7 @@ internal class AgentLocalTools(
             closeIfDone = args.optBoolean("close_if_done", false),
             environment = args.optString("environment", "android"),
             taskId = args.optString("task_id").ifBlank { null },
+            waitMs = args.optInt("wait_ms", 0),
         )
     }
 
@@ -2990,14 +3011,15 @@ internal class AgentLocalTools(
     private companion object {
         // 名单一律取自统一 taxonomy（AgentToolGroups / AgentDeviceToolCatalog），
         // 本地再抄一份必然漂移。这里只保留「派发给结构化设备执行器」的路由集合；
-        // semantic_search_media 有自己的门禁与执行路径，不参与结构化设备派发。
+        // semantic_search_media / pickup_code 有自己的门禁与执行路径，不参与结构化设备派发。
         val DEVICE_TOOL_NAMES =
             io.github.mangi.eta.agent.model.AgentToolGroups.DEVICE_GROUP.toolNames +
                 io.github.mangi.eta.agent.model.AgentToolGroups.CALENDAR_GROUP.toolNames +
                 io.github.mangi.eta.agent.model.AgentToolGroups.DEVICE_STATE_GROUP.toolNames +
                 (
                     io.github.mangi.eta.agent.model.AgentToolGroups.PERSONAL_GROUP.toolNames -
-                        io.github.mangi.eta.agent.model.AgentMediaSearchToolCatalog.SEARCH_MEDIA
+                        io.github.mangi.eta.agent.model.AgentMediaSearchToolCatalog.SEARCH_MEDIA -
+                        io.github.mangi.eta.agent.model.AgentPickupCodeToolCatalog.PICKUP_CODE
                     )
         val MEMORY_TOOL_NAMES = setOf("memory_get", "memory_write")
         /** 允许 `display=main` 显式请求主屏的工具；其余 GUI 工具在后台模式一律副屏。 */

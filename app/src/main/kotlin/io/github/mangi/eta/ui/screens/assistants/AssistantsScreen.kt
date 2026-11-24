@@ -30,6 +30,7 @@ import io.github.mangi.eta.ui.adaptive.EtaScaffoldPage
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedGap
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedGroupSpacing
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedItem
+import io.github.mangi.eta.ui.adaptive.EtaSegmentedItemContainer
 import io.github.mangi.eta.ui.adaptive.rememberFabExpandedState
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.TopBarIconButton
@@ -171,18 +172,31 @@ internal fun LazyListScope.assistantItems(
                     onCopy = { onCopy(profile) },
                     onEdit = { onEdit(profile) },
                     onDelete = { onDelete(profile) },
-                    modifier = Modifier.padding(
-                        start = EtaGroupHorizontalPadding,
-                        end = EtaGroupHorizontalPadding,
-                        bottom = if (index == filtered.lastIndex) EtaSegmentedGroupSpacing else EtaSegmentedGap,
-                    ),
+                    // 官方 animateItem（会话管理页同款口径）：删除淡出 + 补位弹簧；入场不播动画。
+                    modifier = Modifier
+                        .animateItem(
+                            fadeInSpec = null,
+                            fadeOutSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                            placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                        )
+                        .padding(
+                            start = EtaGroupHorizontalPadding,
+                            end = EtaGroupHorizontalPadding,
+                            bottom = if (index == filtered.lastIndex) EtaSegmentedGroupSpacing else EtaSegmentedGap,
+                        ),
                 )
             }
         }
     }
     if (filtered.isEmpty()) {
+        // 非整页零态走分段卡片做底板（全仓空态两档约定；本列表被主页/搜索/弹窗共用，
+        // 卡片高度自适应，各宿主都成立）。
         item(key = "empty") {
-            ListEmptyState(title = stringResource(R.string.assistant_empty))
+            EtaSegmentedItemContainer(
+                modifier = Modifier.padding(horizontal = EtaGroupHorizontalPadding),
+            ) {
+                ListEmptyState(title = stringResource(R.string.assistant_empty))
+            }
         }
     }
 }

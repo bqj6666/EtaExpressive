@@ -16,11 +16,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -40,7 +40,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.IntOffset
@@ -61,6 +60,7 @@ import io.github.mangi.eta.ui.adaptive.EtaClickableRow
 import io.github.mangi.eta.ui.adaptive.EtaDialog
 import io.github.mangi.eta.ui.adaptive.EtaDialogActions
 import io.github.mangi.eta.ui.adaptive.EtaDimens
+import io.github.mangi.eta.ui.adaptive.EtaGroupHorizontalPadding
 import io.github.mangi.eta.ui.adaptive.EtaLoadingSlot
 import io.github.mangi.eta.ui.adaptive.EtaMotion
 import io.github.mangi.eta.ui.adaptive.EtaPickerSheet
@@ -549,11 +549,19 @@ internal fun DoubaoVoiceSettings(onBack: () -> Unit) {
                                     } else {
                                         null
                                     }
-                                    ListEmptyState(
-                                        title = stringResource(R.string.dv_empty_title),
-                                        summary = if (config.cloneKey.isBlank()) stringResource(R.string.dv_empty_no_account) else stringResource(R.string.dv_empty_has_account),
-                                        action = emptyAction,
-                                    )
+                                    // 非整页零态走分段卡片做底板（与上方 VoiceGroup 左右边距对齐）。
+                                    EtaSegmentedItemContainer(
+                                        modifier = Modifier.padding(
+                                            start = EtaGroupHorizontalPadding,
+                                            end = EtaGroupHorizontalPadding,
+                                        ),
+                                    ) {
+                                        ListEmptyState(
+                                            title = stringResource(R.string.dv_empty_title),
+                                            summary = if (config.cloneKey.isBlank()) stringResource(R.string.dv_empty_no_account) else stringResource(R.string.dv_empty_has_account),
+                                            action = emptyAction,
+                                        )
+                                    }
                                 } else {
                                     VoiceGroup {
                                         myVoices.forEach { voice ->
@@ -927,21 +935,41 @@ private fun VoiceSlotSync(apiKey: String, onBusy: (Boolean) -> Unit, onResult: (
                     )
                 }
                 visibleProjects.forEach { item ->
-                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
-                        .selectable(selected = project == item.name, enabled = item.allowed && !working, role = Role.RadioButton, onClick = {
+                    val selected = project == item.name
+                    // 官方单选 ListItem 提供整行选中底色、形状 morph 与 Role.RadioButton 语义；
+                    // 底部面板的选择指示器统一放行尾对勾，不在每行行首挂圆点。
+                    val trailing: (@Composable () -> Unit)? = if (selected) {
+                        { Icon(imageVector = Icons.Rounded.Check, contentDescription = null) }
+                    } else {
+                        null
+                    }
+                    ListItem(
+                        selected = selected,
+                        enabled = item.allowed && !working,
+                        onClick = {
                             TouchHaptics.click(view)
                             project = item.name
                             resultText = ""; failed = false; onResult("")
                             VoiceCatalogPreferences.save(context, ak, item.name)
                             projectPicker = false; projectOptions = false
-                        }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = project == item.name, enabled = item.allowed && !working, onClick = null)
-                        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                            EtaText(item.displayName, color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (item.allowed) 1f else EtaAlphas.DisabledContent))
-                            if (item.displayName != item.name) EtaText(item.name, style = EtaTextStyle.Footnote)
-                            if (!item.allowed) EtaText(stringResource(R.string.dv_no_project_access), style = EtaTextStyle.Footnote, secondary = true)
-                        }
-                    }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        trailingContent = trailing,
+                        content = {
+                            Column {
+                                EtaText(
+                                    item.displayName,
+                                    color = when {
+                                        !item.allowed -> MaterialTheme.colorScheme.onSurface.copy(alpha = EtaAlphas.DisabledContent)
+                                        selected -> MaterialTheme.colorScheme.onSecondaryContainer
+                                        else -> null
+                                    },
+                                )
+                                if (item.displayName != item.name) EtaText(item.name, style = EtaTextStyle.Footnote)
+                                if (!item.allowed) EtaText(stringResource(R.string.dv_no_project_access), style = EtaTextStyle.Footnote, secondary = true)
+                            }
+                        },
+                    )
                 }
             }
         }

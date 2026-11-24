@@ -135,7 +135,6 @@ import io.github.mangi.eta.ui.screens.backup.DataBackupScreen
 import io.github.mangi.eta.ui.screens.browser.AgentBrowserScreen
 import io.github.mangi.eta.ui.screens.chat.ConversationTokenUsageScreen
 import io.github.mangi.eta.ui.screens.chat.ManageChatsScreen
-import io.github.mangi.eta.ui.screens.chat.ManageFoldersScreen
 import io.github.mangi.eta.ui.screens.chat.TrashScreen
 import io.github.mangi.eta.ui.screens.chat.TrashSearchScreen
 import io.github.mangi.eta.ui.screens.chat.MessageSearchScreen
@@ -185,11 +184,14 @@ import top.yukonga.miuix.kmp.nav.transition.NavSwipeDirection
 fun AgentAppRoot(
     /** 完成横幅点击直达的会话 id；路由落地后由 [onLiveTargetConsumed] 复位。 */
     liveTargetConversationId: String? = null,
+    /** 取码通知点击请求令牌；列表落地后由 [onOpenPickupCodesRequestConsumed] 复位。 */
+    openPickupCodesRequest: Int = 0,
     /** 助手浮窗口述「去配置」请求令牌；语音设置页落地后由 [onVoiceSettingsRequestConsumed] 复位。 */
     openVoiceSettingsRequest: Int = 0,
     inboundShareUris: List<String> = emptyList(),
     onInboundShareConsumed: () -> Unit = {},
     onLiveTargetConsumed: () -> Unit = {},
+    onOpenPickupCodesRequestConsumed: () -> Unit = {},
     onVoiceSettingsRequestConsumed: () -> Unit = {},
     /** 边缘横移返回开关；关闭时所有路由的 swipeDismiss 方向为 [NavSwipeDirection.None]。 */
     swipeBackEnabled: Boolean = true,
@@ -584,6 +586,13 @@ fun AgentAppRoot(
         onLiveTargetConsumed()
     }
 
+    // 取码通知直达列表：push 保留来源页，列表不在栈中时也不会像 replace 那样清空返回栈。
+    LaunchedEffect(openPickupCodesRequest) {
+        if (openPickupCodesRequest == 0) return@LaunchedEffect
+        navigator.push(AppRoute.PickupCodes)
+        onOpenPickupCodesRequestConsumed()
+    }
+
     // 浮窗关闭时把在跑的 run 交接给了应用内（见 AgentLiveRunHandoff）：这里只留主页钉子，
     // 不强行导航——用户可能正在别的页面做事，下一次进主页时落进这一单即可。
     // 选中与否由状态层按「当时还在调度台」判断，界面层不重复决定。
@@ -616,7 +625,7 @@ fun AgentAppRoot(
     fun isSettingsDetailRoute(route: AppRoute): Boolean = when (route) {
         AppRoute.Home, AppRoute.Browser, AppRoute.Terminal,
         AppRoute.Settings, AppRoute.SettingsDetailEmpty,
-        AppRoute.ManageChats, AppRoute.ManageFolders, AppRoute.ConversationTrash,
+        AppRoute.ManageChats, AppRoute.ConversationTrash,
         AppRoute.ConversationTrashSearch, AppRoute.ConversationTokenUsage,
         AppRoute.SubAgentStatus, AppRoute.TerminalDaemonTasks -> false
         is AppRoute.MessageSearch -> false
@@ -811,6 +820,35 @@ fun AgentAppRoot(
         agentState.createConversation()
     }
 
+    // 抽屉与管理页（AppRoute.ManageChats）共用的会话动作流：重命名 / 删除 / 移动到分类的
+    // 目标弹窗与导出流程全部宿主在本组件——busy 守卫、确认弹窗、ActivityResultLauncher
+    // 不随入口复制，两条入口链路指向同一份目标状态。
+    //
+    // 定义在 RoutedShell 之外：RoutedShell 只是主 NavDisplay 的壳，而 appEntries() 在它
+    // 外面（CompositionLocalProvider 的 lambda 里）登记 ManageChats entry。定义在壳内
+    // 会让那份 entry 越出作用域（Unresolved reference）。
+    val requestConversationRename: (ConversationSummaryUi) -> Unit = { conversationRenameTarget = it }
+    val requestConversationDelete: (ConversationSummaryUi) -> Unit = { conversationDeleteTarget = it }
+    val requestMoveConversationToFolder: (ConversationSummaryUi) -> Unit = { conversationMoveTarget = it }
+    val exportConversation: (ConversationSummaryUi) -> Unit = { conversation ->
+        if (conversationExportBusy || conversationExportId != null) {
+            Toast.makeText(context, context.getString(R.string.appst_export_in_progress), Toast.LENGTH_SHORT).show()
+        } else {
+            conversationExportId = conversation.id
+            conversationExportTitle = conversation.title.ifBlank { context.getString(R.string.conversation_unnamed) }
+            conversationExportConfirmation = true
+        }
+    }
+    val exportConversationAnalysis: (ConversationSummaryUi) -> Unit = { conversation ->
+        if (conversationAnalysisExportBusy || conversationAnalysisExportId != null) {
+            Toast.makeText(context, context.getString(R.string.appst_export_in_progress), Toast.LENGTH_SHORT).show()
+        } else {
+            conversationAnalysisExportId = conversation.id
+            conversationAnalysisExportTitle = conversation.title.ifBlank { context.getString(R.string.conversation_unnamed) }
+            conversationAnalysisExportOptions = true
+        }
+    }
+
     @Composable
     fun RoutedShell(
         route: AppRoute,
@@ -853,6 +891,12 @@ fun AgentAppRoot(
         val activeConversationKey = remoteTarget
             ?.let { appViewModel.remoteCoordinator.conversationKey(it) }
             ?: (agentState.conversationPaneState.selectedConversationId ?: "new-conversation")
+        // 抽屉与管理页（AppRoute.ManageChats）共用的会话动作流：重命名 / 删除 / 移动到分类的
+        // 目标弹窗与导出流程全部宿主在本组件——busy 守卫、确认弹窗、ActivityResultLauncher
+        // 不随入口复制，两条入口链路指向同一份目标状态。
+        // 定义在 RoutedShell 之外：RoutedShell 只是主 NavDisplay 的壳，而 appEntries() 在它
+        // 外面（CompositionLocalProvider 的 lambda 里）登记 ManageChats entry。定义在壳内
+        // 会让那份 entry 越出作用域（Unresolved reference）。
         AgentAppShell(
             currentRoute = route,
             isCurrentRoute = currentRoute == route,
@@ -946,40 +990,17 @@ fun AgentAppRoot(
             onOpenSubAgentStatus = { pushRoute(AppRoute.SubAgentStatus) },
             selectedProviderId = agentState.modelPickerState.selectedModel?.providerId,
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
-            onConversationRename = { conversation ->
-                conversationRenameTarget = conversation
-            },
-            onConversationDelete = { conversation ->
-                conversationDeleteTarget = conversation
-            },
-            onMoveConversationToFolder = { conversation ->
-                conversationMoveTarget = conversation
-            },
+            onConversationRename = requestConversationRename,
+            onConversationDelete = requestConversationDelete,
+            onMoveConversationToFolder = requestMoveConversationToFolder,
             onConversationTogglePin = { conversation ->
                 agentState.toggleConversationPinned(conversation.id)
             },
-            onConversationExport = { conversation ->
-                if (conversationExportBusy || conversationExportId != null) {
-                    Toast.makeText(context, context.getString(R.string.appst_export_in_progress), Toast.LENGTH_SHORT).show()
-                } else {
-                    conversationExportId = conversation.id
-                    conversationExportTitle = conversation.title.ifBlank { context.getString(R.string.conversation_unnamed) }
-                    conversationExportConfirmation = true
-                }
-            },
-            onConversationAnalysisExport = { conversation ->
-                if (conversationAnalysisExportBusy || conversationAnalysisExportId != null) {
-                    Toast.makeText(context, context.getString(R.string.appst_export_in_progress), Toast.LENGTH_SHORT).show()
-                } else {
-                    conversationAnalysisExportId = conversation.id
-                    conversationAnalysisExportTitle = conversation.title.ifBlank { context.getString(R.string.conversation_unnamed) }
-                    conversationAnalysisExportOptions = true
-                }
-            },
+            onConversationExport = exportConversation,
+            onConversationAnalysisExport = exportConversationAnalysis,
             onOpenManageChats = { pushFromDrawer(AppRoute.ManageChats) },
-            // 抽屉搜索与管理聊天页的放大镜同一个目的地：跨会话全文搜索。
+            // 抽屉搜索与管理页的放大镜同一个目的地：跨会话全文搜索。
             onOpenDrawerSearch = { pushFromDrawer(AppRoute.MessageSearch()) },
-            onOpenManageFolders = { pushFromDrawer(AppRoute.ManageFolders) },
             onSelectFolder = { folderId -> agentState.selectFolder(folderId) },
             onRestoreConversation = { conversationId -> agentState.restoreConversationFromTrash(conversationId) },
             onConversationDeleteForever = { conversationId -> agentState.deleteConversationForever(conversationId) },
@@ -1152,9 +1173,10 @@ fun AgentAppRoot(
                                 is AgentHomeAction.OpenConversation -> agentState.selectConversation(action.conversationId)
                                 is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId, action.providerId)
                                 is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                AgentHomeAction.StopRun -> agentState.pauseCurrentRun()
-                                AgentHomeAction.ContinueRun -> agentState.continuePausedGeneration()
-                                AgentHomeAction.AbortPausedRun -> stopMainReply()
+                                // 用户显式按停止：真停止（不再有暂停/继续态；想继续就发新消息）。
+                                AgentHomeAction.StopRun -> stopMainReply()
+                                // 失败/断线后的续跑（RuntimeFailed 收尾）；不是暂停恢复。
+                                AgentHomeAction.ContinueRun -> agentState.continueDisconnectedGeneration()
                                 is AgentHomeAction.AssistantSelected -> agentState.selectAssistant(action.id)
                                 is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
                                 is AgentHomeAction.VideoAttached -> agentState.attachVideo(action.uri)
@@ -1466,6 +1488,8 @@ fun AgentAppRoot(
             entry<AppRoute.ManageChats>(swipeDismiss = navSwipeDismiss) {
                 ManageChatsScreen(
                     conversations = agentState.conversationPaneState.historyConversations,
+                    folders = agentState.conversationPaneState.folders,
+                    remoteCoordinator = appViewModel.remoteCoordinator,
                     onBack = ::popRoute,
                     onOpenConversation = { conversationId ->
                         selectConversation(conversationId)
@@ -1477,19 +1501,17 @@ fun AgentAppRoot(
                     onDeleteConversation = { conversation ->
                         agentState.deleteConversation(conversation.id)
                     },
-                    onOpenSearchHistory = { pushRoute(AppRoute.MessageSearch()) },
-                )
-            }
-            entry<AppRoute.ManageFolders>(swipeDismiss = navSwipeDismiss) {
-                ManageFoldersScreen(
-                    folders = agentState.conversationPaneState.folders,
-                    conversations = agentState.conversationPaneState.historyConversations,
-                    remoteCoordinator = appViewModel.remoteCoordinator,
-                    onBack = ::popRoute,
+                    // 单条菜单动作全部走宿主共享弹窗/导出流程（与抽屉长按菜单同一条链路）。
+                    onRequestDeleteConversation = requestConversationDelete,
+                    onRenameConversation = requestConversationRename,
+                    onExportConversation = exportConversation,
+                    onExportConversationAnalysis = exportConversationAnalysis,
+                    onMoveConversationToFolder = requestMoveConversationToFolder,
                     onCreateFolder = { name -> agentState.createFolder(name) },
                     onRenameFolder = { folderId, name -> agentState.renameFolder(folderId, name) },
                     onDeleteFolder = { folderId -> agentState.deleteFolder(folderId) },
                     onOpenRemoteAgents = { pushRoute(AppRoute.RemoteAgents) },
+                    onOpenSearchHistory = { pushRoute(AppRoute.MessageSearch()) },
                 )
             }
             entry<AppRoute.ConversationTrash>(swipeDismiss = navSwipeDismiss) {
@@ -1689,10 +1711,23 @@ fun AgentAppRoot(
                 io.github.mangi.eta.ui.AboutScreen(
                     onBack = ::popRoute,
                     onOpenCredits = { pushRoute(AppRoute.AboutCredits) },
+                    onOpenLicenses = { pushRoute(AppRoute.AboutLicenses) },
                 )
             }
             entry<AppRoute.AboutCredits>(swipeDismiss = navSwipeDismiss) {
                 io.github.mangi.eta.ui.AboutCreditsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.AboutLicenses>(swipeDismiss = navSwipeDismiss) {
+                io.github.mangi.eta.ui.AboutLicensesScreen(
+                    onBack = ::popRoute,
+                    onOpenDetail = { licenseId -> pushRoute(AppRoute.AboutLicenseDetail(licenseId)) },
+                )
+            }
+            entry<AppRoute.AboutLicenseDetail>(swipeDismiss = navSwipeDismiss) { route ->
+                io.github.mangi.eta.ui.AboutLicenseDetailScreen(
+                    licenseId = route.licenseId,
+                    onBack = ::popRoute,
+                )
             }
             entry<AppRoute.AuxiliaryVision>(swipeDismiss = navSwipeDismiss) {
                 io.github.mangi.eta.ui.ModelFeatureSettingsScreen(
@@ -1884,6 +1919,11 @@ fun AgentAppRoot(
                     onBack = ::popRoute,
                     coordinator = appViewModel.remoteCoordinator,
                     onOpenEditor = { serverId -> pushRoute(AppRoute.RemoteAgentEditor(serverId)) },
+                )
+            }
+            entry<AppRoute.PickupCodes>(swipeDismiss = navSwipeDismiss) {
+                io.github.mangi.eta.ui.screens.pickup.PickupCodesScreen(
+                    onBack = ::popRoute,
                 )
             }
             entry<AppRoute.RemoteAgentEditor>(swipeDismiss = navSwipeDismiss) { route ->

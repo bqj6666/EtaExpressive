@@ -3,12 +3,15 @@ package io.github.mangi.eta.agent.voice
 import android.Manifest
 import android.app.Service
 import android.app.ActivityOptions
+import android.app.LocaleManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.content.res.Resources
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -49,12 +52,18 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
+import io.github.mangi.eta.agent.capture.AssistantScreenshotCapture
 import io.github.mangi.eta.agent.media.AgentChatImageCache
 import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.media.MAX_AGENT_VIDEO_BYTES
 import io.github.mangi.eta.agent.media.SCREEN_CONTEXT_IMAGE_SOURCE
 import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.agent.model.AgentScreenIntent
+import io.github.mangi.eta.agent.model.AgentPickupCodeToolCatalog
+import io.github.mangi.eta.agent.pickup.PickupCodeExtractor
+import io.github.mangi.eta.agent.pickup.PickupCodeNotifier
+import io.github.mangi.eta.agent.pickup.PickupCodeSettings
+import io.github.mangi.eta.agent.pickup.ocr.PickupOcrEngine
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.question.AgentQuestionAnswer
 import io.github.mangi.eta.agent.question.AgentQuestionCodec
@@ -77,6 +86,8 @@ import io.github.mangi.eta.ui.MainActivity
 import io.github.mangi.eta.ui.app.AgentAppTheme
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
+import io.github.mangi.eta.data.repository.PickupCodeRepository
+import io.github.mangi.eta.data.repository.PickupCodeSource
 import io.github.mangi.eta.ui.app.AgentRunMessageProjector
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
@@ -87,6 +98,7 @@ import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
+import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import java.util.UUID
@@ -99,10 +111,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Eta 数字助理的用户界面窗口。
@@ -163,6 +177,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var inputFocusRequestKey by mutableIntStateOf(-1)
     /** 唤起方式=语音识别的听写开录令牌：每次语音唤起 ++；面板在屏时经重组触发重开。 */
     private var dictationStartRequest by mutableIntStateOf(0)
+    /** 服务侧显式停听写令牌：预设 chip 提交前收声（听写会话在 composer 内部，
+     *  VoiceModeController.stop 不覆盖它；cancel 幂等，面板在屏时经重组触发）。 */
+    private var dictationStopRequest by mutableIntStateOf(0)
     /**
      * 系统选择器让位中：附件/权限跳板把选择器 Activity 打到浮窗之下，浮窗必须整体
      * 隐身（alpha 0）且整窗放行触摸（FLAG_NOT_TOUCHABLE），选择器才能被正常操作。
@@ -203,6 +220,48 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     override val lifecycle: Lifecycle get() = lifecycleRegistry
     override val savedStateRegistry: SavedStateRegistry
         get() = savedStateRegistryController.savedStateRegistry
+
+    /** 当前生效的本地化 Resources：attachBaseContext 时派生，每次唤起（showEntry）刷新。 */
+    private var localizedResources: Resources? = null
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        localizedResources = deriveLocalizedResources(base)
+    }
+
+    /**
+     * 浮窗文案跟随应用语言设置（per-app language）。
+     *
+     * 语言设置走平台 per-app language（LanguageSettingsRepository 直读写
+     * `LocaleManager.applicationLocales`），但系统只给 Activity 重置 base config，
+     * Service 上下文的 Resources 停在进程启动时的 locale（2026-11-15 米家页实测：
+     * applicationContext.getString 不随 per-app locale）。浮窗全部文案都从本服务
+     * 上下文解析，不换 Resources 就会停回默认语言：
+     * - Compose 面：`ComposeView(this)` 的 LocalContext / LocalResources /
+     *   LocalConfiguration 由 view.context 的 getResources() 派生（compose-ui
+     *   1.13.0-alpha01 `ComposeViewContext.ProvideCompositionLocals$ui` 字节码取证）；
+     * - 服务面：toast、语音预设 prompt、取餐码 OCR 汇总等 getString——Context.getString
+     *   为 final（android-37 stub 证实），一律转发 getResources()。
+     *
+     * 因此覆写 getResources 返回按当前语言派生的配置上下文 Resources：per-app 语言
+     * 优先，未设置应用语言时跟随当前系统语言（getSystemLocales，签名经 android-37
+     * javap 核实；进程存活期间系统语言可能变过，base 快照不可靠）。服务实例可跨唤起
+     * 存活（hideForForegroundOperation 只拆窗不自杀），所以每次 showEntry 都重新派生；
+     * 派生只重设 locales，密度等其余配置沿用 base。存储 / IO 路径不取本方法，行为不变。
+     */
+    override fun getResources(): Resources = localizedResources ?: super.getResources()
+
+    /** 按 per-app 语言（缺省=当前系统语言）从 base 派生本地化 Resources。 */
+    private fun deriveLocalizedResources(base: Context): Resources {
+        val localeManager = base.getSystemService(LocaleManager::class.java) ?: return base.resources
+        val locales = localeManager.applicationLocales
+            .takeIf { !it.isEmpty }
+            ?: localeManager.systemLocales
+        val configuration = Configuration(base.resources.configuration).apply {
+            setLocales(locales)
+        }
+        return base.createConfigurationContext(configuration).resources
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -254,6 +313,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         entryCaptureJob?.cancel()
         entryCaptureJob = null
         screenContextAttachment = null
+        // 唤醒识别结果与这一屏绑定，服务销毁后没有任何附件能再对上它，直接丢弃。
+        EtaScreenWakeOcrCache.clear()
         // 关闭浮窗只结束 UI 承载，不打断正在 Runtime 中推进的对话：运行协程挂在独立的
         // runScope 上，会在结果回执后自行回收；只有显式停止（stopCurrentRun）才取消运行。
         // onCreate 之前就被销毁（例如启动即失败）时这些对象还不存在，不能直接访问。
@@ -275,6 +336,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun showEntry() {
+        // 服务实例可能跨语言切换存活（隐藏路径只拆窗不自杀），每次唤起先刷新本地化
+        // Resources，浮窗文案才不会停在改动前的语言（见 getResources 的 KDoc）。
+        localizedResources = deriveLocalizedResources(baseContext)
         if (!Settings.canDrawOverlays(this)) {
             AndroidAgentLogger.warnThrottled("eta_assistant_overlay_permission_missing") {
                 "Eta assistant overlay permission is missing"
@@ -352,12 +416,13 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         exitAnimationRequested = false
         val accessibility = AgentAccessibilityService.current()
         if (accessibility == null) {
-            uiState = uiState.copy(
-                screenContext = EtaScreenContextUiState(
-                    phase = EtaScreenContextPhase.UNAVAILABLE,
-                ),
-            )
-            presentEntry(generation, voiceWake)
+            // 无障碍服务未启用：按「屏幕截图方式」设置兜底（root/Shizuku 静默取帧；
+            // 无可用后端保持原 UNAVAILABLE 态）。先挂窗再等兜底帧，入口不被截屏阻塞。
+            entryCaptureJob = scope.launch {
+                presentEntry(generation, voiceWake)
+                val attachment = captureFallbackAttachment()
+                finalizeEntryCapture(generation, voiceWake, attachment)
+            }
             return
         }
         entryCaptureJob = scope.launch {
@@ -370,31 +435,36 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             )
             val bitmap = result.bitmap
             val attachment = if (bitmap == null || result.criticalWindowMissing) {
-                null
+                // 无障碍没拿到帧：按「屏幕截图方式」设置兜底（root/Shizuku）。
+                captureFallbackAttachment()
             } else {
-                try {
-                    runCatching {
-                        val image = AgentImageCodec.fromScreenContextBitmap(
-                            bitmap,
-                            source = SCREEN_CONTEXT_IMAGE_SOURCE,
-                        )
-                        val preview = AgentImageCodec.previewFromReference(
-                            this@EtaAssistantOverlayService,
-                            image,
-                        ) ?: return@runCatching null
-                        EtaScreenContextAttachment(
-                            image = image,
-                            previewDataUrl = preview.reference,
-                        )
-                    }.onFailure { throwable ->
-                        AndroidAgentLogger.warn(
-                            "Eta assistant entry screenshot encode failed: " +
-                                "type=${throwable.javaClass.simpleName}"
-                        )
-                    }.getOrNull()
-                } finally {
-                    if (!bitmap.isRecycled) bitmap.recycle()
-                }
+                encodeScreenContextAttachment(bitmap)
+            }
+            finalizeEntryCapture(generation, voiceWake, attachment)
+        }
+    }
+
+    /**
+     * 入口截屏收尾：挂附件、落 AVAILABLE/UNAVAILABLE 态并呈现入口（过期代次丢弃）。
+     *
+     * 「唤醒即排序」的落点：附件就位就立刻落 AVAILABLE（「添加当前屏幕」保持即时可用，
+     * 不为排序多等），排序另开协程补齐——chips 由
+     * [EtaScreenContextUiState.presetRankingSettled] 闸门压住，落定后才一次性按最终顺序出现，
+     * 不会先按旧顺序亮一帧再跳位。
+     */
+    private fun finalizeEntryCapture(
+        generation: Long,
+        voiceWake: Boolean,
+        attachment: EtaScreenContextAttachment?,
+    ) {
+        scope.launch {
+            // 学习顺序在 IO 线程先读好：它只是 chips 的初始底座，不能占主线程做磁盘读。
+            // 整个读取必须自带兜底——本 scope 没有 CoroutineExceptionHandler，
+            // 排序这个增强项一旦抛异常就会连带跳过 presentEntry、把入口浮窗卡死。
+            val learnedOrder = if (attachment == null) {
+                emptyList()
+            } else {
+                readLearnedOrderSafely()
             }
             withContext(Dispatchers.Main.immediate) {
                 if (generation != entryGeneration) return@withContext
@@ -402,18 +472,265 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 screenContextAttachment = attachment
                 uiState = uiState.copy(
                     screenContext = if (attachment == null) {
-                        EtaScreenContextUiState(phase = EtaScreenContextPhase.UNAVAILABLE)
+                        EtaScreenContextUiState(
+                            phase = EtaScreenContextPhase.UNAVAILABLE,
+                            presetRankingSettled = true,
+                        )
                     } else {
                         EtaScreenContextUiState(
                             phase = EtaScreenContextPhase.AVAILABLE,
                             previewDataUrl = attachment.previewDataUrl,
+                            // 先摆好已学习顺序（闸门未开，chips 还没显示），
+                            // 排序结果回来后覆盖它并揭开闸门。
+                            presetOrder = learnedOrder,
+                            presetRankingSettled = false,
                         )
                     },
                 )
                 presentEntry(generation, voiceWake)
             }
+            if (attachment == null) return@launch
+            settlePresetRanking(generation, attachment)
         }
     }
+
+    /** 读学习顺序；失败退回空表（空表 = UI 侧用固定顺序），绝不向上抛。 */
+    private fun readLearnedOrderSafely(): List<ScreenContextPreset> =
+        runCatching { EtaScreenPresetOrderStore.read(applicationContext) }
+            .onFailure {
+                AndroidAgentLogger.warnThrottled("eta_screen_preset_order_read_failed") {
+                    "Eta screen preset order read failed: type=${it.javaClass.simpleName}"
+                }
+            }
+            .getOrDefault(emptyList())
+
+    /**
+     * 当前屏幕的文本，供排序使用：无障碍树优先，取不到才 OCR。
+     *
+     * 无障碍树是纯内存遍历，比「解码位图 + 全图推理」便宜一个数量级，而且没有识别误差。
+     * 只在 WebView / Canvas / 图片这类读不到文字的页面上才需要走到 OCR。
+     * 任何一层失败都返回 null，由排序退回「已学习顺序 + 频次」。
+     */
+    private suspend fun screenTextForRanking(
+        reference: String,
+        signal: EtaScreenSignal,
+    ): String? = runCatching {
+        EtaScreenWakeOcr.screenTextForRanking(
+            context = applicationContext,
+            reference = reference,
+            accessibilityText = signal.text,
+        )
+    }.onFailure {
+        AndroidAgentLogger.warnThrottled("eta_assistant_wake_ocr_failed") {
+            "Eta assistant wake OCR failed: type=${it.javaClass.simpleName}"
+        }
+    }.getOrNull()
+
+    /**
+     * 采集当前屏幕的无障碍信号（文本 + 密码框）。
+     *
+     * 在排序阶段读，而不是复用截屏那次调用：`captureScreenshotExcludingOverlays` 只回
+     * 位图，不回节点树，两者没有可复用的中间结果。这次查询经 `runOnMainSync` 投递到
+     * 主线程，是纯内存遍历（上限 120 节点），相对 OCR 可忽略。
+     *
+     * 读不到（无障碍未启用 / 节点被系统裁剪）时返回空信号，排序退回 OCR。
+     * 敏感页判定依赖这里的密码框结果，因此无法省掉这一次查询。
+     */
+    private fun captureScreenSignal(): EtaScreenSignal =
+        runCatching {
+            val service = AgentAccessibilityService.current()
+                ?: return@runCatching EtaScreenSignal(text = "", hasPasswordField = false)
+            val nodes = service.queryNodes(EtaScreenWakeOcr.accessibilityNodeLimit())
+            EtaScreenWakeOcr.screenSignalOf(nodes)
+        }.onFailure {
+            AndroidAgentLogger.warnThrottled("eta_screen_ranking_a11y_failed") {
+                "Eta screen ranking accessibility signal failed: type=${it.javaClass.simpleName}"
+            }
+        }.getOrDefault(EtaScreenSignal(text = "", hasPasswordField = false))
+
+    /**
+     * 唤醒识别 + 定序，结果回写 UI（闸门置 true 让 chips 亮出）。
+     *
+     * 信号优先级：前台包名 > 屏幕文字 > 历史频次（见 [EtaScreenPresetRanking]）。
+     * 包名判得出来就完全不跑 OCR——这是唤醒延迟最省的一条路径。
+     *
+     * 识别以 [EtaScreenWakeOcr.RANKING_OCR_TIMEOUT_MS] 封顶：超时就先按已学习顺序 + 频次
+     * 收敛出 chips，**识别本身不取消**（[kotlinx.coroutines.async] 不是等待方的子作用域），
+     * 跑完后照常写缓存——用户随后点「记取码」仍命中。
+     *
+     * 全链路兜底：本方法任何位置抛异常都只降级排序，绝不影响已挂好的入口浮窗。
+     */
+    private suspend fun settlePresetRanking(
+        generation: Long,
+        attachment: EtaScreenContextAttachment,
+    ) {
+        try {
+            settlePresetRankingInternal(generation, attachment)
+        } catch (cancellation: CancellationException) {
+            // 服务销毁 / 重新唤起导致的作用域取消：不是失败，交回协程框架。
+            throw cancellation
+        } catch (error: Throwable) {
+            AndroidAgentLogger.warnThrottled("eta_screen_preset_ranking_failed") {
+                "Eta screen preset ranking failed: type=${error.javaClass.simpleName}"
+            }
+            // 排序失败必须揭开闸门，否则 chips 永远不出现——宁可顺序不智能，
+            // 也不能让用户看到一排空白。
+            withContext(Dispatchers.Main.immediate) {
+                if (generation != entryGeneration) return@withContext
+                uiState = uiState.copy(
+                    screenContext = uiState.screenContext.copy(presetRankingSettled = true),
+                )
+            }
+        }
+    }
+
+    /**
+     * 把某个固定顺序落到 UI 并揭开闸门。
+     *
+     * 「放弃智能排序」的三条出口（开关关闭 / 敏感页 / 任何异常）都走这里：顺序直接给定，
+     * 不写学习顺序、不记频次——放弃排序的语义就是「这一屏不参与任何推断」。
+     */
+    private suspend fun settleRanking(
+        order: List<ScreenContextPreset>,
+        generation: Long,
+    ) {
+        withContext(Dispatchers.Main.immediate) {
+            if (generation != entryGeneration) return@withContext
+            uiState = uiState.copy(
+                screenContext = uiState.screenContext.copy(
+                    presetOrder = order,
+                    presetRankingSettled = true,
+                ),
+            )
+        }
+    }
+
+    private suspend fun settlePresetRankingInternal(
+        generation: Long,
+        attachment: EtaScreenContextAttachment,
+    ) {
+        EtaScreenSmartRankingSettings.ensureLoaded(applicationContext)
+        val enabled = EtaScreenSmartRankingSettings.enabled
+        // 排序关闭时连屏幕文本都不读：设置页承诺「不读取屏幕内容」（
+        // assistant_screen_preset_ranking_summary_off），这里必须整段短路，
+        // 不能先读再做判断。回到固定顺序并立即揭开闸门。
+        if (!enabled) {
+            settleRanking(ScreenContextPreset.entries, generation)
+            return
+        }
+        val learned = readLearnedOrderSafely()
+        val usage = runCatching { EtaScreenPresetUsage.scores(applicationContext) }
+            .getOrDefault(emptyMap())
+        val reference = attachment.image.reference
+
+        // 包名与无障碍信号各一次查询、零 OCR，先拿到再决定要不要识别。
+        val foregroundPackage = runCatching {
+            AgentAccessibilityService.current()?.currentPackageName()
+        }.getOrNull()
+        val signal = captureScreenSignal()
+
+        // 敏感页（支付 / 银行 / 密码框 / 系统设置）整体放弃排序：
+        // 屏幕文本等于用户正在做什么，这类页面不推断、不学习、不记频次。
+        if (EtaScreenPresetAffinity.isSensitiveScreen(
+                packageName = foregroundPackage,
+                hasPasswordField = signal.hasPasswordField,
+            )
+        ) {
+            settleRanking(ScreenContextPreset.entries, generation)
+            return
+        }
+        val affinity = runCatching {
+            EtaScreenPresetAffinity.affinity(applicationContext, foregroundPackage)
+        }.getOrNull()
+
+        // 包名已判出：直接定序，不跑 OCR。这是唤醒延迟最省的一条路径，
+        // 也是这次「包名先验」相对纯 OCR 排序的主要收益。
+        //
+        // 这里必须直接在当前协程里 await，不要再套一层 scope.async：
+        // 超时语义是「只放弃等待、不取消识别」，嵌套两层会让外层超时后内层仍在跑，
+        // 而抛出的取消会顺着内层 scope 影响缓存写入时机。
+        val screenText: String? = if (affinity != null) {
+            null
+        } else {
+            // async 挂在 scope 上而不是本协程下：withTimeoutOrNull 超时只放弃「等待」，
+            // 不取消识别；识别跑完仍会把结果写进缓存供「记取码」复用。
+            //
+            // 注意：screenTextForRanking 内部**不得**再起一层 async。两层叠加时外层超时
+            // 只丢弃等待结果，内层继续跑并在稍后写缓存；而外层若因作用域取消而失败，
+            // 内层协程的写缓存时机会与下一次唤起的 entryGeneration 检查错位。
+            val textJob = scope.async(Dispatchers.IO) {
+                screenTextForRanking(reference, signal)
+            }
+            withTimeoutOrNull(EtaScreenWakeOcr.RANKING_OCR_TIMEOUT_MS) { textJob.await() }
+        }
+
+        val interfaceIsChinese = EtaScreenInterfaceLocale.isChinese(this)
+        val order = EtaScreenPresetRanking.rank(
+            learned = learned,
+            screenText = screenText,
+            usage = usage,
+            enabled = enabled,
+            affinity = affinity,
+            interfaceIsChinese = interfaceIsChinese,
+        )
+        // 频次收敛的结果回写学习顺序，下次唤醒从这里继续收敛；上下文信号（包名 / 关键词）
+        // 只作用于本次，免得偶发的一屏取码页把这个预设长期钉在首位。
+        val nextLearned = EtaScreenPresetRanking.learnedAfterWake(
+            learned = learned,
+            screenText = screenText,
+            usage = usage,
+            enabled = enabled,
+            affinity = affinity,
+            interfaceIsChinese = interfaceIsChinese,
+        )
+        if (nextLearned != learned) {
+            runCatching { EtaScreenPresetOrderStore.write(applicationContext, nextLearned) }
+        }
+
+        withContext(Dispatchers.Main.immediate) {
+            if (generation != entryGeneration) return@withContext
+            uiState = uiState.copy(
+                screenContext = uiState.screenContext.copy(
+                    presetOrder = order,
+                    presetRankingSettled = true,
+                ),
+            )
+        }
+    }
+
+    /** 位图 → 屏幕上下文附件：编码失败返回 null（日志只记类型），位图用后即收。 */
+    private fun encodeScreenContextAttachment(bitmap: android.graphics.Bitmap): EtaScreenContextAttachment? {
+        try {
+            return runCatching {
+                val image = AgentImageCodec.fromScreenContextBitmap(
+                    bitmap,
+                    source = SCREEN_CONTEXT_IMAGE_SOURCE,
+                )
+                val preview = AgentImageCodec.previewFromReference(
+                    this,
+                    image,
+                ) ?: return@runCatching null
+                EtaScreenContextAttachment(
+                    image = image,
+                    previewDataUrl = preview.reference,
+                )
+            }.onFailure { throwable ->
+                AndroidAgentLogger.warn(
+                    "Eta assistant entry screenshot encode failed: " +
+                        "type=${throwable.javaClass.simpleName}"
+                )
+            }.getOrNull()
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
+    /**
+     * 无障碍截屏不可用时的兜底：按「屏幕截图方式」设置取帧（root/Shizuku，
+     * [AssistantScreenshotCapture.capture] 内部按可用性秒回），再转屏幕上下文附件。
+     */
+    private suspend fun captureFallbackAttachment(): EtaScreenContextAttachment? =
+        AssistantScreenshotCapture.capture()?.let(::encodeScreenContextAttachment)
 
     private fun presentEntry(generation: Long, voiceWake: Boolean) {
         if (generation != entryGeneration || presentedEntryGeneration == generation) return
@@ -520,6 +837,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         composer = composerState,
                         voiceState = voiceState,
                         dictationStartRequest = dictationStartRequest,
+                        dictationStopRequest = dictationStopRequest,
                         pickerYield = pickerYield,
                         onSystemPickerLaunch = ::beginPickerYield,
                         inputFocusRequestKey = inputFocusRequestKey,
@@ -631,9 +949,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
         val normalized = prompt.trim()
         if (normalized.isBlank()) return
-        // 唤起即屏幕上下文：指令明示要看屏幕内容且入口截图就绪时自动选中——预览卡弹出即
-        // 功能触发的可见反馈，消息附带入口截图，首轮模型直接看到屏幕（省一次工具往返）。
-        // AgentScreenIntent 只在弹窗链路使用；主程序对话不做该判断（硬边界，用户定稿）。
+        // 唤起即屏幕上下文：指令提到屏幕（或可视指代 + 内容动作）且入口截图就绪时自动
+        // 选中——预览卡弹出即功能触发的可见反馈，消息附带入口截图，首轮模型直接看到屏幕
+        // （省一次工具往返）。AgentScreenIntent 只在弹窗链路使用；主程序对话不做该判断
+        // （硬边界，用户定稿）。
         if (!uiState.screenContext.selected &&
             uiState.screenContext.phase == EtaScreenContextPhase.AVAILABLE &&
             screenContextAttachment != null &&
@@ -747,6 +1066,12 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         val normalized = prompt.trim()
         if (normalized.isBlank() || activeRunId != null) return
         val attachment = screenContextAttachment.takeIf { uiState.screenContext.selected }
+        // 前置判断没有附图时，唤醒截图不丢：落一份缓存文件随请求交给 Runtime，
+        // 模型若发现需要看屏幕，可调用 view_entry_screenshot 取回这张已备好的截图，
+        // 不必重新截屏（正则漏判的兜底）。
+        val fallbackScreenImage = screenContextAttachment
+            ?.takeIf { attachment == null }
+            ?.image
         // 待发附件先在 Main 快照，真正编码放到 runJob 的 IO 线程：附件要从原始引用重编码成
         // 「尽量无损」档，不能在主线程上解码大图。屏幕上下文图片本就是原生无损档，原样使用。
         val pendingForRun = composerState.pendingImages
@@ -781,6 +1106,21 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 withContext(Dispatchers.IO) {
                     pendingForRun.map { it.toRequestModelImage(this@EtaAssistantOverlayService, supportsVideo) }
                 }
+            // 兜底截图落盘到缓存目录：run 期间由 Runtime 的 view_entry_screenshot 读取；
+            // 不随本次协程结束删除（浮窗关闭后 run 可能仍在 Runtime 里继续），改按
+            // ENTRY_SCREEN_FILE_TTL_MS 在下次写入时清理过期文件。
+            val fallbackScreenFile = withContext(Dispatchers.IO) {
+                fallbackScreenImage?.let { image ->
+                    runCatching {
+                        val bytes = AgentChatImageCache.readBytes(image.reference)
+                            ?: return@runCatching null
+                        val directory = java.io.File(cacheDir, ENTRY_SCREEN_CACHE_DIR).apply { mkdirs() }
+                        val cutoff = System.currentTimeMillis() - ENTRY_SCREEN_FILE_TTL_MS
+                        directory.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
+                        java.io.File(directory, "$runId.bin").apply { writeBytes(bytes) }
+                    }.getOrNull()
+                }
+            }
             // 输入区携带的模型 / 助手 / 思考档位 / 工具开关 → 运行时配置；
             // 取不到（理论上不会）时退回默认配置。
             val config = composerState.buildRunConfig() ?: AgentModelClient.loadConfig()
@@ -819,6 +1159,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     allowUnmeasuredContextSend = true,
                     // 空串 = 普通对话；快捷功能预设由 Runtime 选择目录构建策略。
                     toolPreset = toolPreset,
+                    // 前置判断未附图的唤醒截图：交给 Runtime 的按需工具取用。
+                    entryScreenImagePath = fallbackScreenFile?.absolutePath.orEmpty(),
                     handoff = AgentRuntimeWire.EntryHandoff(
                         id = "$conversationKey:$runId",
                         source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
@@ -1335,11 +1677,256 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         // 语音模式里预设同样常驻：先退出语音（含听写与播报），再把这句话连同屏幕截图发出去，
         // 否则麦克风 / 播报会和这一轮 run 抢同一段音频。
         voiceController.stop()
+        // 听写是 composer 内部的另一条会话，VoiceModeController.stop 不覆盖它；
+        // 令牌 ++ 让听写条原地收声（× 语义丢弃转写），pickup 预设的 OCR 等待窗口
+        // 内麦克风不再占用。对全部预设生效：点 chip 即放弃口述。
+        dictationStopRequest++
         // submitPrompt 按 selected 决定是否带图；预设本身就是带屏幕提问，直接选中再发。
         uiState = uiState.copy(
             screenContext = uiState.screenContext.copy(selected = true),
         )
+        // 记一次点击：用于「无上下文命中」时的低频换位（EtaScreenPresetUsage）与表外应用的
+        // 包名关联学习（EtaScreenPresetAffinity）。落盘一律走 IO，不能落在点击的首帧上。
+        scope.launch(Dispatchers.IO) {
+            val foregroundPackage = runCatching {
+                AgentAccessibilityService.current()?.currentPackageName()
+            }.getOrNull()
+            // 敏感页上的点击不参与任何学习：那里的行为最能暴露用户私事，
+            // 记下来既无助于排序，也不该留下痕迹。
+            if (EtaScreenPresetAffinity.isSensitiveScreen(
+                    packageName = foregroundPackage,
+                    hasPasswordField = false,
+                )
+            ) {
+                return@launch
+            }
+            runCatching { EtaScreenPresetUsage.record(applicationContext, preset) }
+            runCatching {
+                EtaScreenPresetAffinity.record(applicationContext, foregroundPackage, preset)
+            }
+        }
+        if (preset == ScreenContextPreset.PICKUP_CODE) {
+            submitPickupPresetWithLocalOcr()
+            return
+        }
         submitPrompt(getString(preset.promptRes), toolPreset = preset.toolPreset)
+    }
+
+    /**
+     * 「记取码」预设入口：按「纯本地识别」开关二分。
+     * - 开（澎湃记同口径）：本地 OCR → 去重入库 → 提醒 → 对话流工具卡收尾，零模型往返；
+     * - 关（默认）：本地 OCR 命中时把结构化结果注入 prompt——模型只需调 `pickup_code`
+     *   落库，零视觉往返；超时或未命中则按原 prompt 提交，由模型看截图兜底。
+     * 注入模式下 OCR 全程不落任何数据，保存动作只经 Agent 工具发生。
+     */
+    private fun submitPickupPresetWithLocalOcr() {
+        val attachment = screenContextAttachment ?: return
+        PickupCodeSettings.ensureLoaded(applicationContext)
+        if (PickupCodeSettings.localOcrOnly) {
+            submitPickupPresetPureLocal(attachment)
+            return
+        }
+        val basePrompt = getString(R.string.voice_screen_preset_pickup_prompt)
+        scope.launch {
+            // 唤醒时已对同一帧跑过 Pass1（见 settlePresetRanking），这里直接接上，
+            // 省掉一次全图推理；缓存未命中（识别超时 / 关闭排序）时退回自行识别。
+            val cachedPass1 = EtaScreenWakeOcrCache.take(attachment.image.reference)?.pass1
+            // 有界等待：首帧冷启动含模型加载也封顶 [PICKUP_OCR_TIMEOUT_MS]，超时走视觉兜底。
+            // withTimeoutOrNull 超时返回 null → orEmpty 归一为空列表。
+            val localResult = withTimeoutOrNull(PICKUP_OCR_TIMEOUT_MS) {
+                runCatching {
+                    PickupCodeExtractor.fromScreenContextReference(
+                        applicationContext,
+                        attachment.image.reference,
+                        existingPass1 = cachedPass1,
+                    )
+                }.onFailure {
+                    AndroidAgentLogger.warn(
+                        "Eta pickup preset local OCR failed: type=${it.javaClass.simpleName}",
+                    )
+                }.getOrNull().orEmpty()
+            }.orEmpty()
+            val prompt = if (localResult.isEmpty()) {
+                basePrompt
+            } else {
+                buildString {
+                    append(basePrompt)
+                    append("\n\n")
+                    append(getString(R.string.voice_screen_preset_pickup_local_result))
+                    localResult.forEach { draft ->
+                        append("\n- ")
+                        append(draft.code)
+                        append("（类型：${draft.orderType}")
+                        draft.brandName?.takeIf { it.isNotBlank() }?.let { append("，品牌：$it") }
+                        draft.pickupLocation?.takeIf { it.isNotBlank() }?.let { append("，位置：$it") }
+                        append("）")
+                    }
+                }
+            }
+            // OCR 期间用户可能已开新 run；submitPrompt 自带 activeRunId 兜底，但状态
+            // 修改必须回主线程（composer/uiState 均为 Main 状态）。
+            withContext(Dispatchers.Main.immediate) {
+                submitPrompt(prompt, toolPreset = ScreenContextPreset.PICKUP_CODE.toolPreset)
+            }
+        }
+    }
+
+    /**
+     * 纯本地识别（严格离线）：对话流先注入一张 `pickup_code` 工具卡（Running 态 =
+     * 官方 LoadingIndicator「本地识别中」），OCR + 去重入库 + 提醒全部本地完成后把
+     * 同一张卡原位收尾（Success 对勾 + 结果摘要/明细，或 Failed 叉 + 未识别提示）。
+     * 不发起 run：[activeRunId] 保持 null、phase 不动；屏幕上下文按 submitPrompt 同款
+     * 口径消费。OCR 未命中/超时也 strictly 不碰模型（澎湃记口径），卡片即失败态。
+     *
+     * 全链路兜底：[scope] 未挂 CoroutineExceptionHandler，任何异常逃逸都会以未捕获
+     * 异常杀进程（浮窗直接闪退）——这里把整个协程体包进 try/catch，所有 Throwable
+     * （CancellationException 除外）原位收敛为同一张卡的 Failed 态并带根因诊断。
+     */
+    private fun submitPickupPresetPureLocal(attachment: EtaScreenContextAttachment) {
+        val cardId = "pickup-ocr-${UUID.randomUUID()}"
+        screenContextAttachment = null
+        uiState = uiState.copy(
+            screenContext = EtaScreenContextStateReducer.consume(),
+            messages = uiState.messages + ToolActivityMessageUi(
+                id = cardId,
+                toolName = AgentPickupCodeToolCatalog.PICKUP_CODE,
+                status = ToolActivityStatusUi.Running,
+                argumentsSummary = getString(R.string.pickup_ocr_card_running),
+            ),
+        )
+        scope.launch {
+            var ocrThrownType: String? = null
+            var persistThrownType: String? = null
+            try {
+                // 唤醒时已对同一帧跑过 Pass1（见 settlePresetRanking），这里直接接上。
+                val cachedPass1 = EtaScreenWakeOcrCache.take(attachment.image.reference)?.pass1
+                val drafts = withTimeoutOrNull(PICKUP_OCR_TIMEOUT_MS) {
+                    runCatching {
+                        PickupCodeExtractor.fromScreenContextReference(
+                            applicationContext,
+                            attachment.image.reference,
+                            existingPass1 = cachedPass1,
+                        )
+                    }.onFailure {
+                        ocrThrownType = it.javaClass.simpleName
+                        AndroidAgentLogger.warn(
+                            "Eta pickup preset pure-local OCR failed: type=${it.javaClass.simpleName}",
+                        )
+                    }.getOrNull().orEmpty()
+                }.orEmpty()
+                // 去重入库与提醒逐条走既有链路（通知观察者同口径）；source=AGENT 与
+                // 管理页手动截屏识别行一致。单条失败不中断其余条目，也不杀进程。
+                var savedCount = 0
+                if (drafts.isNotEmpty()) {
+                    withContext(Dispatchers.IO) {
+                        val repository = PickupCodeRepository(applicationContext)
+                        drafts.forEach { draft ->
+                            runCatching {
+                                if (repository.findUnfinishedByCode(draft.code) == null) {
+                                    repository.insert(
+                                        code = draft.code,
+                                        orderType = draft.orderType,
+                                        brandName = draft.brandName,
+                                        pickupLocation = draft.pickupLocation,
+                                        source = PickupCodeSource.AGENT,
+                                        sourcePackage = packageName,
+                                        fullText = draft.fullText,
+                                    )
+                                    savedCount++
+                                }
+                                PickupCodeNotifier.notifyNewCode(
+                                    context = applicationContext,
+                                    code = draft.code,
+                                    orderType = draft.orderType,
+                                    brandName = draft.brandName,
+                                    pickupLocation = draft.pickupLocation,
+                                )
+                            }.onFailure {
+                                persistThrownType = it.javaClass.simpleName
+                                AndroidAgentLogger.warn(
+                                    "Eta pickup pure-local persist failed: type=${it.javaClass.simpleName}",
+                                )
+                            }
+                        }
+                    }
+                }
+                // 失败诊断直出卡片：按链路分派——提取层异常 → 落库层异常 → 引擎
+                // lastError；都为空说明引擎正常跑完但没检出/没命中码。
+                val diagnosis = when {
+                    drafts.isEmpty() && ocrThrownType != null -> ocrThrownType
+                    drafts.isEmpty() -> PickupOcrEngine.getInstance(applicationContext).lastError
+                        ?.let { "OCR: $it" }
+                        ?: getString(R.string.pickup_ocr_card_no_code_on_screen)
+                    else -> persistThrownType
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    // 收尾同时换掉卡片标题：argumentsSummary 是卡头 title（ChatMessageItem
+                    // 3785 行口径），停在「正在识别…」会与终态正文自相矛盾。
+                    val finishedTitle = getString(R.string.pickup_ocr_card_done)
+                    uiState = uiState.copy(
+                        messages = uiState.messages.map { message ->
+                            if (message !is ToolActivityMessageUi || message.id != cardId) {
+                                message
+                            } else if (savedCount > 0) {
+                                message.copy(
+                                    argumentsSummary = finishedTitle,
+                                    status = ToolActivityStatusUi.Success,
+                                    resultSummary = getString(R.string.pickup_projection_done, savedCount),
+                                    resultDetail = drafts.joinToString("\n") { draft ->
+                                        listOfNotNull(
+                                            draft.code,
+                                            draft.orderType,
+                                            draft.brandName?.takeIf { it.isNotBlank() },
+                                            draft.pickupLocation?.takeIf { it.isNotBlank() },
+                                        ).joinToString(" · ")
+                                    } + (persistThrownType?.let { "\n保存异常: $it" } ?: ""),
+                                )
+                            } else if (drafts.isNotEmpty() && persistThrownType == null) {
+                                // 识别到了但全部重复（同码未完成已存在）：不是失败，如实说明。
+                                message.copy(
+                                    argumentsSummary = finishedTitle,
+                                    status = ToolActivityStatusUi.Success,
+                                    resultSummary = getString(R.string.pickup_ocr_card_dup),
+                                    resultDetail = drafts.joinToString("\n") { it.code },
+                                )
+                            } else {
+                                message.copy(
+                                    argumentsSummary = finishedTitle,
+                                    status = ToolActivityStatusUi.Failed,
+                                    resultSummary = getString(R.string.pickup_ocr_card_none),
+                                    resultDetail = diagnosis,
+                                )
+                            }
+                        },
+                    )
+                }
+            } catch (error: CancellationException) {
+                // 面板销毁/会话取消的正常路径，交回协程框架。
+                throw error
+            } catch (error: Throwable) {
+                AndroidAgentLogger.warn(
+                    "Eta pickup pure-local crashed: type=${error.javaClass.simpleName}, " +
+                        "message=${error.message.orEmpty().take(200)}",
+                )
+                withContext(Dispatchers.Main.immediate) {
+                    uiState = uiState.copy(
+                        messages = uiState.messages.map { message ->
+                            if (message !is ToolActivityMessageUi || message.id != cardId) {
+                                message
+                            } else {
+                                message.copy(
+                                    argumentsSummary = getString(R.string.pickup_ocr_card_done),
+                                    status = ToolActivityStatusUi.Failed,
+                                    resultSummary = getString(R.string.pickup_ocr_card_none),
+                                    resultDetail = error.javaClass.simpleName +
+                                        (error.message?.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""),
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+        }
     }
 
     private fun removeScreenContext() {
@@ -1519,6 +2106,13 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         private const val SYNTHETIC_STOPPED = "eta_status:stopped"
         private const val SYNTHETIC_RUNTIME_FAILED = "eta_status:runtime_failed"
         private const val FOREGROUND_DISMISS_TIMEOUT_MS = 2_000L
+        /** 前置判断未附图时，唤醒截图的临时落盘目录（按 TTL 清理，不随 run 删除）。 */
+        private const val ENTRY_SCREEN_CACHE_DIR = "eta-entry-screen"
+
+        /** 「记取餐码」预设本地 OCR 的有界等待：含首次模型加载，超时即走模型视觉兜底。 */
+        private const val PICKUP_OCR_TIMEOUT_MS = 6_000L
+        /** 唤醒截图临时文件的保留时长：覆盖浮窗关闭后 run 在 Runtime 继续执行的时间。 */
+        private const val ENTRY_SCREEN_FILE_TTL_MS = 60 * 60 * 1000L
         private val mainHandler = Handler(Looper.getMainLooper())
 
         @Volatile

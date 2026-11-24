@@ -139,6 +139,7 @@ Provider 层支持 OpenAI-compatible Chat Completions、Responses API 和 Anthro
 - [liyunkkk/Eta](https://github.com/liyunkkk/Eta)：参考分支，灵动岛思维流的实现来源：思考/输出流式预览、工具语义化与通知卡片呼吸动效计时。
 - [NatumRagnag/Eta](https://github.com/NatumRagnag/Eta)：参考分支，小米宿主桥接的实现来源：HyperOS 4 UIAgent 工具桥、内部 ToolsBridge 与 Vision / 外部 Agent 服务。
 - [yooma1/Eta666](https://github.com/yooma1/Eta666)：参考分支，米家直连的实现来源：mijia 云客户端（OAuth2 授权 / 设备同步 / 属性读写 / 动作）、MIoT 规格解析与中文语音匹配核心零改造移植，`mijia_control` 工具目录原样引入；设置界面按本仓 M3 分段列表口径重写。
+- [badnng/Hyper-pick-up-code（澎湃记）](https://github.com/badnng/Hyper-pick-up-code)：取餐码 / 取件码识别功能的实现参考，核心识别与规则引擎逻辑移植自该项目（AGPL-3.0-only），归属与许可证说明见 [第三方声明](docs/THIRD_PARTY_NOTICES.md)。
 - [Pi Coding Agent](https://github.com/earendil-works/pi)：Agent Runtime 的核心参考，包括 Agent Loop、Tool Calling、Steering 与 Transcript 状态管理。
 - [dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype)：DeepSeek 开源的主动式 Agent 研究原型。「调度智能体」的理念来源：主 Session 仅负责路由与研判、工单/授权/准入流水线，以及结构化提问、如实汇报等行为律。
 - [TaiJi（太极）](https://github.com/zhushanwen321/tai-ji)：AI Agent 桌面工作台。「调度台」的会话形态与机制参考：受限工具白名单的调度模式、自包含 Brief、Notify-once 完成通知债权与防注入规范。
@@ -154,6 +155,7 @@ Provider 层支持 OpenAI-compatible Chat Completions、Responses API 和 Anthro
 - [Zafiro](https://github.com/niki914/zafiro)：用户对话气泡的样式参考。其气泡设计与 Google Material Design 3 Expressive 的示例气泡高度相似，因此采用并适配到本项目。
 - [Material Design 3 Expressive](https://m3.material.io)：Google Material Design 3 Expressive 官方站点，本程序的界面设计语言与视觉风格均参考自其中的示例与规范。
 - [KernelSU](https://github.com/tiann/KernelSU)：本应用“外观与主题”子设置页面的设计参考。
+- vd-preview-gateway：开发期取证的本地预览网关（MIT，版权归 AcidGr，全文见 `tools/vd-preview-gateway/LICENSE`），不随 APK 分发。
 - 此外，感谢所有在手机上本地部署运行的开源模型——包括语音合成与识别模型、Embedding 模型等——它们让 EtaExpressive 能够在不依赖云端的情况下完成语音交互、语义检索与本地推理。
 
 ## 社区

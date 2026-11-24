@@ -2,6 +2,7 @@ package io.github.mangi.eta.data.db
 
 import android.content.Context
 import androidx.annotation.VisibleForTesting
+import io.github.mangi.eta.core.AndroidAgentLogger
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -53,19 +54,27 @@ internal abstract class EtaDatabase : RoomDatabase() {
             }
 
         /**
-         * 打开数据库时对 room_master_table 的 identity_hash 做一次容错。
+         * 打开数据库时对 room_master_table 的 identity hash 做一次容错。
          *
-         * Room 启动时会拿库里的 identity hash 与编译期生成的 hash 比对，不一致就直接
-         * 抛 IllegalStateException，整库打不开 —— 表现为「对话和供应商全都读不到」。
-         * 换签名重装、或用脚本整文件替换 eta.db 之后，这个 hash 常常对不上（schema 本身其实没变）。
+         * Room 启动时会拿库里的 identity hash 与编译期生成的 hash 比对，不一致就直接抛
+         * IllegalStateException，整库打不开——表现为「对话和供应商全都读不到」。典型触发
+         * 场景：备份恢复用脚本整文件替换 eta.db、未来再次出现同版本号 schema 漂移。
          *
-         * 这里不删库、不清数据：只在确实撞到 identity 校验失败时，删掉 room_master_table
-         * 那一行并重新打开。Room 随后走「没有 master table」分支，对 17 张表跑一遍完整
-         * schema 校验，校验通过就写回正确 hash；结构真的不符会抛明确错误而不是静默改库。
+         * 这里不删库、不清数据：只在确实撞到 identity 校验失败时删掉 room_master_table
+         * 并重新打开。Room 随后走「没有 master table」分支，对全部表跑一遍完整 schema
+         * 校验，校验通过就写回正确 hash；结构真的不符会抛明确错误而不是静默改库。
+         *
+         * 注意：为把校验提前到构建阶段，这里会强制触发一次真实打开（磁盘 IO）。
+         * get() 的全部调用方都在后台语境（AgentDispatchCoordinator 等），不得从主线程
+         * 首次调用 get()。
          */
         private fun build(context: Context): EtaDatabase {
             val create = {
-                Room.databaseBuilder(context, EtaDatabase::class.java, "eta.db")
+                Room.databaseBuilder(
+                    context,
+                    EtaDatabase::class.java,
+                    "eta.db",
+                )
                     .addMigrations(*ALL_MIGRATIONS)
                     // 不再无条件清库。原先的 fallbackToDestructiveMigration 会对**任何**缺失的迁移
                     // 路径静默重建全部表：漏写一个迁移的用户不会看到报错，只会发现历史会话凭空蒸发。
@@ -84,8 +93,8 @@ internal abstract class EtaDatabase : RoomDatabase() {
             } catch (error: IllegalStateException) {
                 if (error.message?.contains(IDENTITY_MISMATCH) != true) throw error
                 runCatching { first.close() }
-                io.github.mangi.eta.core.AndroidAgentLogger.warn(
-                    "eta.db identity hash mismatch (likely reinstalled with another signing key); " +
+                AndroidAgentLogger.warn(
+                    "eta.db identity hash mismatch (likely restored eta.db from another build); " +
                         "revalidating schema instead of failing: ${error.message}"
                 )
                 dropMasterIdentity(context)
@@ -95,6 +104,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
 
         private const val IDENTITY_MISMATCH = "verify the data integrity"
 
+        /** Room 实例必须先关闭（避免 WAL 竞态），再对库文件直删 master table。 */
         private fun dropMasterIdentity(context: Context) {
             val file = context.getDatabasePath("eta.db")
             if (!file.isFile) return

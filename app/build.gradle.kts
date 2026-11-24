@@ -48,8 +48,8 @@ android {
         // 停在 36 的下场是系统照样按 app-op 静默丢包、却不给任何开关，用户无从自助。
         targetSdk = 37
         // versionCode 规则：yyyyMMdd + 两位当日序号（01 起），发版时随 versionName 一起手动递增。
-        versionCode = 2026111501
-        versionName = "5.6.0"
+        versionCode = 2026112401
+        versionName = "5.7.0"
         val diagnosticSha = System.getenv("GITHUB_SHA")?.takeIf { it.matches(Regex("[0-9a-fA-F]{40}")) } ?: "unknown"
         buildConfigField("String", "GIT_SHA", "\"$diagnosticSha\"")
 
@@ -103,6 +103,9 @@ android {
 
     androidResources {
         localeFilters += listOf("en", "b+zh+Hans", "b+zh+Hant")
+        // PP-OCR det/rec 模型（assets/models/ppocrv6_tiny）以原始字节随机读取加载，
+        // 压缩入包会被 ORT 直接打开失败，与澎湃记移植源的打包口径一致。
+        noCompress += "onnx"
     }
 
     packaging {
@@ -204,6 +207,30 @@ dependencies {
     // 基准配置文件：由 :baselineprofile 模块在真机 / 模拟器上生成（generateBaselineProfile）。
     baselineProfile(project(":baselineprofile"))
     implementation(libs.hidden.api.bypass)
+
+    // 取餐码识别（移植自 badnng/Hyper-pick-up-code，AGPL-3.0）：
+    // PP-OCRv6 tiny 推理走 onnxruntime（slim 变体，纯 CPU，不含 QNN/NPU 后端），
+    // DB 后处理（findContours/minAreaRect/unclip）依赖 OpenCV。均为本地 AAR，来源见
+    // docs/THIRD_PARTY_NOTICES.md。
+    // 注意：slim AAR 重打包定稿（2026-11-21 真机实证两轮）——语音引擎（sherpa-onnx
+    // prepareSpeechRuntime）自带 libonnxruntime.so 1.28.2 且按 prepare 脚本随包，同名
+    // .so 无法共存，而 ORT 1.21.1 的 JNI 库带 GNU 符号版本引用（OrtGetApiBase@
+    // VERS_1.21.1 等 2 处），Android 16 linker 按版本标签匹配符号：喂 1.28.2 库=
+    // "cannot locate symbol OrtGetApiBase"（dlopen 失败）；只做「引用去版本化」让它
+    // 落到 1.28.2 上则加载可过但 GetApi(21) 跨 7 个 minor 版本行为不可证（真机弹窗
+    // 闪退）。最终方案=**各消费者精确配对**：OCR 的 1.21.1 运行时复制改名
+    // libpaddle_ort.so（--set-soname + 对 OrtGetApiBase/OrtSessionOptionsAppend
+    // ExecutionProvider_CPU 两个定义 --clear-symbol-version），libonnxruntime4j_jni.so
+    // 同步去版本化（--clear-symbol-version 2 处引用 + 动态表 DT_VERSYM/DT_VERNEED/
+    // DT_VERNEEDNUM 三条改写 DT_NULL，否则 patchelf 不会清残留 verneed）并
+    // --replace-needed 指向 libpaddle_ort.so；两套 ORT 同进程独立共存，sherpa 侧
+    // （只引 OrtGetApiBase@VERS_1.28.2）与其自带库精确配对勿动。C API 向前兼容论证
+    // 不作数：ABI 层的符号版本标签配对在 API 层论证之前。
+    implementation(files("libs/onnxruntime-slim.aar"))
+    implementation(files("libs/opencv-slim.aar"))
+    // Shizuku：免 Root 截屏后端之一（screencap 经 Shizuku.newProcess）。
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
 
     // DataStore：Provider / Model 结构化 JSON 与当前选中 ID 等键值
     implementation(libs.datastore.preferences)

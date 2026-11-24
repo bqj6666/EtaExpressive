@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.SmartToy
@@ -510,6 +511,12 @@ internal fun SettingsScreen(
                     EtaClickableRow(title = stringResource(R.string.route_remote_agents),
                         leading = { PreferenceIcon(icon = Icons.Rounded.Lan) },
                         onClick = { onNavigate(AppRoute.RemoteAgents) })
+                }
+
+                row(key = SettingsKeys.PICKUP_CODES) {
+                    EtaClickableRow(title = stringResource(R.string.settings_pickup_codes_title),
+                        leading = { PreferenceIcon(icon = Icons.AutoMirrored.Rounded.ReceiptLong) },
+                        onClick = { onNavigate(AppRoute.PickupCodes) })
                 }
             }
 

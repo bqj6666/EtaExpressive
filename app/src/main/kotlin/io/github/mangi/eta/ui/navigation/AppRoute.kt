@@ -56,6 +56,14 @@ sealed interface AppRoute : NavKey {
     @Serializable
     data object AboutCredits : AppRoute
 
+    /** 关于页「开源许可」子页；列出随 APK 分发的第三方组件及其 `assets/licenses/` 许可证文件。 */
+    @Serializable
+    data object AboutLicenses : AppRoute
+
+    /** 单条许可证全文查看页；[licenseId] 对应 AboutLicensesScreen 登记表里的条目 id。 */
+    @Serializable
+    data class AboutLicenseDetail(val licenseId: String) : AppRoute
+
     @Serializable
     data object SpeechSettings : AppRoute
 
@@ -200,12 +208,9 @@ sealed interface AppRoute : NavKey {
     @Serializable
     data object UsageStats : AppRoute
 
+    /** 管理页：会话库（按分类折叠分组）与分类的统一整理中枢；从抽屉工具栏的「管理」入口进入。 */
     @Serializable
     data object ManageChats : AppRoute
-
-    /** 分类管理页：新建 / 重命名 / 删除文件夹（会话分类）；从抽屉的「管理分类」入口进入。 */
-    @Serializable
-    data object ManageFolders : AppRoute
 
     /** 回收站：已软删除会话的恢复与彻底清理。 */
     @Serializable
@@ -272,6 +277,10 @@ sealed interface AppRoute : NavKey {
      */
     @Serializable
     data class RemoteAgentEditor(val serverId: String? = null) : AppRoute
+
+    /** 取餐码记录管理页：未完成列表、通知方式与截图后端设置。 */
+    @Serializable
+    data object PickupCodes : AppRoute
 
     /**
      * 宽屏设置页右栏的兜底空态。

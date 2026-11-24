@@ -8,6 +8,7 @@ import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Compress
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Description
@@ -82,6 +83,7 @@ internal object SettingsKeys {
     const val TOOL_RECIPES = "tool_recipes"
     const val SUB_AGENTS = "sub_agents"
     const val REMOTE_AGENTS = "remote_agents"
+    const val PICKUP_CODES = "pickup_codes"
 
     // 通用
     const val VOICE = "voice"
@@ -280,7 +282,7 @@ internal fun settingsCatalog(): List<SettingsEntry> {
                 key = SettingsKeys.THINKING_DEFAULT,
                 title = stringResource(R.string.ui_deep_thinking_enabled_by_default_c032d6),
                 summary = null,
-                keywords = "thinking reasoning 深度思考 推理 思维链 慢思考 默认开启",
+                keywords = "thinking reasoning 深度思考 推理 思维链 慢思考 允许 总开关",
                 icon = Icons.Rounded.Psychology,
                 group = groupModelFeatures,
                 destination = SettingsDestination.Inline,
@@ -374,6 +376,17 @@ internal fun settingsCatalog(): List<SettingsEntry> {
                 icon = Icons.Rounded.Lan,
                 group = groupContextExtensions,
                 destination = SettingsDestination.Route(AppRoute.RemoteAgents),
+            ),
+        )
+        add(
+            SettingsEntry(
+                key = SettingsKeys.PICKUP_CODES,
+                title = stringResource(R.string.settings_pickup_codes_title),
+                summary = null,
+                keywords = "pickup code 取码 取餐码 取件码 取货码 提货码 快递 外卖 拾取 提醒",
+                icon = Icons.AutoMirrored.Rounded.ReceiptLong,
+                group = groupContextExtensions,
+                destination = SettingsDestination.Route(AppRoute.PickupCodes),
             ),
         )
 

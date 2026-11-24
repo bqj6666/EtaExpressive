@@ -86,11 +86,8 @@ internal object AgentRuntimeWire {
     /** client -> service：向当前 run 追加补充指令。 */
     const val MSG_STEER_RUN = 13
 
-    /** client -> service：暂停当前 run。 */
-    const val MSG_PAUSE_RUN = 14
-
-    /** client -> service：恢复当前 run。 */
-    const val MSG_RESUME_RUN = 15
+    // 14/15 曾是跨进程暂停/恢复（MSG_PAUSE_RUN/MSG_RESUME_RUN）；用户可见的暂停已移除，
+    // 暂停只剩运行时内部闸门（预算闸门、虚拟屏接管），不再走 IPC。编号保留不复用。
 
     /** client -> service：在当前 run 内压缩，不另开 run。 */
     const val MSG_COMPACT_RUN = 16
@@ -282,6 +279,8 @@ internal object AgentRuntimeWire {
     private const val KEY_ALLOW_UNMEASURED_CONTEXT_SEND = "allow_unmeasured_context_send"
     private const val KEY_ENTRY_TOOLS = "entry_tools"
     private const val KEY_TOOL_PRESET = "tool_preset"
+    /** 唤醒时已采集、但前置判断未加进消息的屏幕截图（本地缓存文件路径）。 */
+    private const val KEY_ENTRY_SCREEN_IMAGE_PATH = "entry_screen_image_path"
     private const val KEY_CREATED_AT = "created_at"
     private const val KEY_RESULTS = "results"
     private const val KEY_ENTRY_TOOL_CALL_ID = "entry_tool_call_id"
@@ -352,6 +351,13 @@ internal object AgentRuntimeWire {
          * 不靠解析 prompt 文案判断运行类型。
          */
         val toolPreset: String = "",
+        /**
+         * 唤醒时已采集、但前置判断没有加进用户消息的屏幕截图（入口进程缓存文件路径）。
+         *
+         * Runtime 只把它交给按需调用的 `view_entry_screenshot` 工具，不并入 [images]：
+         * 前置判断漏掉时，模型仍能取回这张「已经备好」的截图，而不必重新截屏。
+         */
+        val entryScreenImagePath: String = "",
     ) {
         val effectiveTurnId: String get() = turnId.ifBlank { runId }
         // 旧入口沿用会话 handoff；无持久会话的入口以首个 run 为会话起点。
@@ -514,6 +520,7 @@ internal object AgentRuntimeWire {
         request.calibratedInputTokens?.takeIf { it > 0 }?.let { putInt(KEY_CALIBRATED_INPUT_TOKENS, it) }
         putBoolean(KEY_ALLOW_UNMEASURED_CONTEXT_SEND, request.allowUnmeasuredContextSend)
         putString(KEY_TOOL_PRESET, request.toolPreset.trim())
+        putString(KEY_ENTRY_SCREEN_IMAGE_PATH, request.entryScreenImagePath.trim())
         putStringArrayList(
             KEY_ENTRY_TOOLS,
             ArrayList(
@@ -700,6 +707,7 @@ internal object AgentRuntimeWire {
             ),
             hostCapabilities = bundle.getStringArrayList(KEY_HOST_CAPABILITIES).orEmpty().toSet(),
             toolPreset = bundle.getString(KEY_TOOL_PRESET).orEmpty().trim(),
+            entryScreenImagePath = bundle.getString(KEY_ENTRY_SCREEN_IMAGE_PATH).orEmpty().trim(),
         )
 
     fun entryToolCallToBundle(call: EntryToolCall): Bundle {

@@ -91,6 +91,12 @@ internal object AgentToolCatalog {
          * 这样 `tools` 在会话内字节恒定，provider 的前缀缓存只在集合增长时失效一次。
          */
         nativeGroups: Set<String>? = null,
+        /**
+         * 唤醒截图兜底：本次运行有入口进程传来的「已采集、未附图」屏幕截图。
+         * 仅弹窗链路、消息无附图时为 true；与 [screenTools] 同时成立才下发
+         * `view_entry_screenshot`，执行侧仍会按屏幕开关兜底复查。
+         */
+        entryScreenFallback: Boolean = false,
     ): JSONArray {
         // 组开关只决定「参与下发」；延迟折叠与单工具禁用统一在最后一次过滤完成，
         // 目录过滤、索引行与 tools_use_group 枚举共用同一份可用性判定，
@@ -127,7 +133,12 @@ internal object AgentToolCatalog {
         }
         val emitted = JSONArray()
         if (basicTools) AgentQuestionToolCatalog.appendTo(emitted)
-        AgentContextAppToolCatalog.appendTo(emitted, screenTools = screenTools, basicTools = basicTools)
+        AgentContextAppToolCatalog.appendTo(
+            emitted,
+            screenTools = screenTools,
+            basicTools = basicTools,
+            entryScreenFallback = entryScreenFallback,
+        )
         if (basicTools) AgentSpeechToolCatalog.appendTo(emitted)
         if (screenTools) {
             AgentGestureToolCatalog.appendTo(emitted)
@@ -161,6 +172,8 @@ internal object AgentToolCatalog {
         // 媒体语义搜索是个人数据组成员：个人数据开关放行、未被单独禁用才可见
         // （禁用与否由最后的 withheld 过滤统一裁决，没有独立的组级开关）。
         if (personalTools) AgentMediaSearchToolCatalog.appendTo(emitted)
+        // 取餐码同属个人数据组：读写 Eta 自有记录库，无 Root / 系统权限依赖。
+        if (personalTools) AgentPickupCodeToolCatalog.appendTo(emitted)
         // 只要存在「开关允许、但尚未打开」的组，就下发一个 tools_use_group。
         // 枚举只列这些组：全部打开、或开关全关时都不该出现一个必然失败或有多个空选项的工具。
         // 决策收窄（control）时再按 openableGroupLimit 过滤：提示里不能点名一个 gate 允许、

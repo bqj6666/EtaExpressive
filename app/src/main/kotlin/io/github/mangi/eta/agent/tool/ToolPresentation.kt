@@ -47,6 +47,7 @@ import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.OpenWith
 import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -105,6 +106,7 @@ internal object ToolPresentation {
     @StringRes
     fun nameRes(toolId: String): Int? = when (toolId) {
         "observe_screen" -> R.string.tool_observe_screen
+        "view_entry_screenshot" -> R.string.tool_view_entry_screenshot
         "tap" -> R.string.tool_tap
         "tap_element" -> R.string.tool_tap_element
         "tap_area" -> R.string.tool_tap_area
@@ -248,6 +250,8 @@ internal object ToolPresentation {
         // 屏幕观察族：眼睛语义，区别于虚拟屏（ScreenshotMonitor）的「屏幕搬运」。
         "observe" -> Icons.Rounded.Visibility
         "observe_screen" -> Icons.Rounded.Visibility
+        // 唤醒截图兜底：取回唤醒时已采集的画面，图片语义。
+        "view_entry_screenshot" -> Icons.Rounded.Image
         "click" -> Icons.Rounded.AdsClick
         "tap" -> Icons.Rounded.AdsClick
         "tap_element" -> Icons.Rounded.AdsClick
@@ -360,6 +364,7 @@ internal object ToolPresentation {
         "search_messages" -> Icons.Rounded.Sms
         "search_media", "search_qq_chat_images", "search_wechat_chat_images" -> Icons.Rounded.Image
         "semantic_search_media" -> Icons.Rounded.Image
+        "pickup_code" -> Icons.AutoMirrored.Rounded.ReceiptLong
         "search_audio" -> Icons.Rounded.MusicNote
         "search_recordings", "search_coloros_recordings", "search_recording_summaries" -> Icons.Rounded.Mic
         "search_files" -> Icons.Rounded.FolderOpen

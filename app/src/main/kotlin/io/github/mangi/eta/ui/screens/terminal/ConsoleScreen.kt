@@ -43,6 +43,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextMeasurer
@@ -69,6 +72,7 @@ import io.github.mangi.eta.ui.components.FooterTooltipBox
 import io.github.mangi.eta.ui.components.toSpanStyle
 import androidx.compose.material3.Button as M3Button
 import androidx.compose.material3.ButtonDefaults as M3ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FloatingToolbarDefaults
@@ -76,14 +80,13 @@ import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconButtonShapes
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text as M3Text
 import androidx.compose.material3.TextButton as M3TextButton
 import androidx.compose.ui.graphics.vector.ImageVector
 import io.github.mangi.eta.ui.adaptive.EtaButtonStyle
+import io.github.mangi.eta.ui.adaptive.EtaConnectedGroupRow
+import io.github.mangi.eta.ui.adaptive.EtaExpressiveToggleButton
 import io.github.mangi.eta.ui.adaptive.EtaFloatingToolbarConcentricPadding
 import io.github.mangi.eta.ui.adaptive.EtaIconButton
 import io.github.mangi.eta.ui.adaptive.EtaIconSize
@@ -172,8 +175,13 @@ internal fun TerminalBodyText(
 /**
  * 环境切换标签（Android / Linux）。
  *
- * M3：官方 `SingleChoiceSegmentedButtonRow` + `SegmentedButton`，自带选中语义、涟漪与
- * 官方连接形状（`SegmentedButtonDefaults.itemShape`）。
+ * 官方连体 ToggleButton 组（M3E ButtonGroup connected 档）——[EtaConnectedGroupRow] 官方
+ * 2dp 缝 + [EtaExpressiveToggleButton]（官方 `ToggleButton` +
+ * `ButtonGroupDefaults.connected*ButtonShapes()`：外角全圆、内角 8dp、按压内角收到 4dp，
+ * 选中态 `checkedShape` = CornerFull 由官方 shapes 自带），weight 等分可用宽度。
+ * 取证（material3 1.5.0-alpha29 AAR javap）：connectedLeading/Middle/TrailingButtonShapes
+ * 均存在（三个形状参数可默认省略）、`ConnectedSpaceBetween` = 2dp（clinit `ldc2_w 2.0d`）、
+ * `connectedButtonCheckedShape` = `ShapeTokens.getCornerFull()`。
  */
 @Composable
 internal fun TerminalEnvironmentTabs(
@@ -183,15 +191,24 @@ internal fun TerminalEnvironmentTabs(
     modifier: Modifier = Modifier,
 ) {
     val view = LocalView.current
-    SingleChoiceSegmentedButtonRow(modifier = modifier) {
+    EtaConnectedGroupRow(modifier = modifier) {
         labels.forEachIndexed { index, label ->
-            SegmentedButton(
-                selected = index == selectedIndex,
-                onClick = {
-                    TouchHaptics.click(view)
-                    onSelect(index)
+            EtaExpressiveToggleButton(
+                checked = index == selectedIndex,
+                onCheckedChange = { checked ->
+                    if (checked) {
+                        TouchHaptics.click(view)
+                        onSelect(index)
+                    }
                 },
-                shape = SegmentedButtonDefaults.itemShape(index = index, count = labels.size),
+                shapes = when (index) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    labels.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { role = Role.RadioButton },
             ) {
                 M3Text(text = label, style = MaterialTheme.typography.labelLarge)
             }

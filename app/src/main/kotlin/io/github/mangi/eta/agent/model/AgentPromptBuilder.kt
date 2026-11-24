@@ -68,6 +68,11 @@ internal object AgentPromptBuilder {
         presetRunAt: Instant? = null,
         /** 唤起即屏幕上下文（助手弹窗 run）：true 时注入 observe_screen 首轮规则（见 buildSystemMessages）。 */
         screenObservationRule: Boolean = false,
+        /**
+         * 唤醒截图兜底：入口进程已有「已采集、未附图」的屏幕截图。
+         * true 时提示优先引导 `view_entry_screenshot`，而不是重新截屏。
+         */
+        entryScreenFallback: Boolean = false,
         /** 「添加日程」快速路径：用一条专用短系统约束替换全部常驻规则。 */
         calendarFastTask: Boolean = false,
     ): JSONArray {
@@ -85,6 +90,7 @@ internal object AgentPromptBuilder {
             dynamicToolGroups = dynamicToolGroups,
             presetRunAt = presetRunAt,
             screenObservationRule = screenObservationRule,
+            entryScreenFallback = entryScreenFallback,
             calendarFastTask = calendarFastTask,
         )
         onSystemCount(messages.length())
@@ -167,12 +173,58 @@ internal object AgentPromptBuilder {
             "不要凭空猜测屏幕内容，也不要不带截图先调用一次 observe_screen 再重复调用。"
 
     /**
+     * 唤醒截图兜底规则（助手弹窗 run，入口已采集截图但前置判断未附图）。
+     *
+     * 与 [screenObservationRuleText] 互斥：优先取用入口截图，避免模型为了同一张屏多跑一次
+     * observe_screen（也避免在屏幕已被工具改动后仍误用旧截图）。
+     */
+    private fun entryScreenFallbackRuleText(): String =
+        "如果用户这条请求需要看当前手机屏幕上的内容，而消息没有附带截图，" +
+            "助手已经备好用户唤起时采集的屏幕截图：请先调用 view_entry_screenshot " +
+            "取回这张图，再回答或执行，不要重新调用 observe_screen 截同一张屏。" +
+            "只有该截图不可用（工具返回 ENTRY_SCREEN_UNAVAILABLE）、或你已经用工具改变了屏幕时，" +
+            "才调用 observe_screen 且把 include_screenshot 置为 true。不要凭空猜测屏幕内容。"
+
+    /**
+     * 日程抽取边界：两条日程路径（快捷 chip 的快速路径、主界面关键词命中）共用**同一份**文本。
+     *
+     * **必须是正面清单**（2026-11-24 对话取证）：旧版写成「只取真实发生或明确要求用户办理的事项」，
+     * 再列举「填表说明 / 举例 / 条件句 / 别人的时间安排」，模型据此把
+     * 「Qoder 匿名模型 HungerG 免费畅玩 11/23—11/30」判成营销宣传而非用户日程，整轮零工具调用；
+     * 用户紧接着补一句「就是在结束前给我提醒一下」，说明该意图本就存在。
+     * 否定式清单只会教模型找理由排除，限时活动 / 优惠期这类「有起止日期、用户会想被提醒」的
+     * 事项必须直接点名算数。唯一排除条件收敛为「整条没有任何时间信息」。
+     *
+     * 抽成常量而不是两处各写一份：两个入口的判定口径必须逐字一致，否则同一个「加日程」意图
+     * 从 chip 点进来和从输入框打字进来会得出相反结论，且后续改动极易漏掉其中一处。
+     */
+    private const val CALENDAR_EXTRACTION_RULE =
+        "抽取：凡带日期、时间或时间段的条目都算数——会议、约见、截止日期、行程、报名/考试/开场/结束时间，" +
+            "以及限时活动、优惠或试用期的起止日期（用户多半想被提醒，别当成广告跳过）。" +
+            "填表说明、举例、条件句（“如果…则填…”）不算日程；字段缺失时按截图能看到的内容合理补全，" +
+            "读不出来的不猜、不追问、不编造，也不要为了凑数硬造条目。" +
+            "整条确实没有任何时间信息时才不写。\n"
+
+    /**
+     * 相对时间换算口径：同样由两条日程路径共用。
+     *
+     * 关键取舍是「缺年份按当前时间推断」而不是「缺年份就跳过」：海报、通知里的日期常省略年份，
+     * 一律跳过等于把最常见的一类截图挡在门外。同理不因「可能已过去」整条丢弃，交回给模型判断具体日期。
+     * 但「不要改写成未来日期」必须保留：它防的是把历史截图里的旧日期顺手挪到未来，
+     * 与「不因过去而丢弃」是两件事——丢掉整条是少加，挪到未来是加错，后者更糟。
+     */
+    private const val CALENDAR_TIME_RULE =
+        "时间：指令里的“今天/明天/后天/周X/下周X”按上面的当前时间换算成具体日期与时刻；" +
+            "截图、聊天记录、通知等引用内容里的日期按原文理解，缺年份按当前时间推断，" +
+            "不要因为“可能已过去”就丢弃整条，也不要改写成未来日期。\n"
+
+    /**
      * 日程预热的运行时间口径（语音「创建屏幕日程」预设与关键词命中的通用日程任务共用）。
      *
      * 时间取 Runtime 在请求发起时刻捕获的 [Instant]，按设备本地时区展开；
      * 格式与日历工具 schema 一致（start/end = `YYYY-MM-DDTHH:MM` 设备本地时间，
      * match_date = `YYYY-MM-DD`，省略 end 默认 +1 小时，只写日期表示全天），
-     * 避免提示与参数格式打架。
+     * 避免提示与参数格式打架。抽取与相对时间口径取共用常量，与快速路径逐字一致。
      */
     private fun presetRunAtRule(instant: Instant): String {
         val local = instant.atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.MINUTES)
@@ -180,9 +232,8 @@ internal object AgentPromptBuilder {
         val offset = local.offset.id.let { if (it == "Z") "UTC" else "UTC$it" }
         val weekday = local.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.SIMPLIFIED_CHINESE)
         return "当前时间（本次请求发起时刻）：$dateTime（$offset），时区 ${local.zone.id}，$weekday。\n" +
-            "用户**指令里**说的“今天/明天/后天/周五/下周一下午三点”等相对时间，按这一刻的本地时间换算成具体日期与时刻；" +
-            "用户指令引用的截图、聊天记录、通知或原文里出现的日期与时刻按原文理解，不要用当前年份去补，也不要把它换算成未来日期。" +
-            "日期缺少年份、明显早于当前时间，或属于示例、条件句、填表说明时，不要写成日程，在回复里说明跳过原因。\n" +
+            CALENDAR_EXTRACTION_RULE +
+            CALENDAR_TIME_RULE +
             "日程工具的时间参数使用 YYYY-MM-DDTHH:MM（设备本地时间，秒可省略；只写 YYYY-MM-DD 表示全天日程）；" +
             "省略 end 时默认 start 后 1 小时（全天日程为 1 天），按标题定位事件的 match_date 用 YYYY-MM-DD。\n" +
             "本轮已直接给出当前时间：无需再调用 get_current_context 或其它取时工具；没有可写入的日程时直接说明，不要勉强调用写入工具。"
@@ -196,20 +247,24 @@ internal object AgentPromptBuilder {
      * 快捷功能的目标在点击时就已确定，所以这里用一条自洽的短规则整体替换常驻段：
      * 时间口径、抽取边界、失败口径三个容易反刍的决策一次讲死，并把「没有日程就不调用工具」
      * 明确写成合法结果。
+     *
+     * 抽取边界与时间口径复用 [CALENDAR_EXTRACTION_RULE] / [CALENDAR_TIME_RULE]，与关键词命中的
+     * 普通日程任务（[presetRunAtRule]）逐字一致；这里只额外追加批量写入与回执口径。
      */
     private fun calendarFastTaskRule(instant: Instant): String {
         val local = instant.atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.MINUTES)
         val dateTime = local.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm", Locale.ROOT))
         val offset = local.offset.id.let { if (it == "Z") "UTC" else "UTC$it" }
         val weekday = local.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.SIMPLIFIED_CHINESE)
-        return "当前时间：$dateTime（$offset），时区 ${local.zone.id}，$weekday。这是一次「把截图或指令里的事项添加到系统日历」的快捷任务，只做抽取与一次批量写入。\n" +
-            "时间：指令里的“今天/明天/后天/周X/下周X”按上面的当前时间换算；截图、聊天记录、通知等引用内容里的日期按原文理解，" +
-            "不要套用当前年份，也不要把已过去的日期改写成未来日期。缺年份、明显已过去、无法唯一定下来的条目直接跳过，不猜、不追问、不编造。\n" +
-            "抽取：只取真实发生或明确要求用户办理的事项；填表说明、举例、条件句（“如果…则填…”）、别人的时间安排都不算用户日程。\n" +
-            "执行：把所有有效条目一次性放进 create_calendar_events 的 events 数组，只调用一次；start/end 用 YYYY-MM-DDTHH:MM（设备本地时间），" +
-            "只写 YYYY-MM-DD 表示全天，省略 end 默认 1 小时。没有有效条目时不要调用任何工具，直接回复截图里没有可添加的日程并说明看到了什么。\n" +
-            "回执：ok=true 才逐条说明创建了什么；ok=false 时如实说明失败原因与已创建项，不要原样重试整批，必要时才用 search_calendar_events 核对。\n" +
-            "不要输出计划、推理过程或中间说明，不要调用取时、屏幕、搜索等其它工具。最终回复用用户的语言，一到两句话。"
+        return "当前时间：$dateTime（$offset），时区 ${local.zone.id}，$weekday。这是一次「把截图或指令里的事项添加到系统日历」的快捷任务：抽取，批量写入一次，然后回执。\n" +
+            CALENDAR_EXTRACTION_RULE +
+            CALENDAR_TIME_RULE +
+            "执行：所有条目一次性放进 create_calendar_events 的 events 数组，只调用一次；" +
+            "start/end 用 YYYY-MM-DDTHH:MM（设备本地时间），只写 YYYY-MM-DD 为全天，省略 end 默认 1 小时；" +
+            "没有条目时不要调用任何工具。\n" +
+            "回执：ok=true 逐条说明加了什么；一条都没有时直说截图里没找到可加的时间信息，并说明看到了什么；" +
+            "ok=false 说明失败原因与已创建项，不要整批重试，必要时才用 search_calendar_events 核对。" +
+            "只回复结果，不写计划和推理，用用户的语言，一到两句话。"
     }
 
     fun buildSystemMessages(
@@ -263,6 +318,8 @@ internal object AgentPromptBuilder {
         presetRunAt: Instant? = null,
         /** 唤起即屏幕上下文（助手弹窗 run）；见 [buildInitialMessages]。 */
         screenObservationRule: Boolean = false,
+        /** 唤醒截图兜底（助手弹窗 run，已采集截图但未附图）；见 [buildInitialMessages]。 */
+        entryScreenFallback: Boolean = false,
         /**
          * 「添加日程」快速路径：为 true 时只下发人格 + [calendarFastTaskRule] 并直接返回，
          * 跳过所有常驻策略、组索引与被关闭能力说明。快捷任务的目录已收窄，这些段落既用不上，
@@ -349,8 +406,11 @@ internal object AgentPromptBuilder {
         // 模型可一步换算相对日期并调用创建工具，省掉「先取时间」的一次往返。
         presetRunAt?.let { messages.put(systemMessage(presetRunAtRule(it))) }
         // 唤起即屏幕上下文（助手弹窗）：用户指令依赖其当前屏幕内容且消息未附图，引导模型
-        // 一步到位带截图观察，省一次「解锁屏幕组 → 观察」的往返。屏幕组已由运行侧预开。
-        if (screenObservationRule) {
+        // 一步到位拿到画面，省一次「解锁屏幕组 → 观察」的往返。入口已备好截图时优先
+        // view_entry_screenshot（不重新截屏）；否则退回 observe_screen 带截图。
+        if (entryScreenFallback && !pureChat) {
+            messages.put(systemMessage(entryScreenFallbackRuleText()))
+        } else if (screenObservationRule) {
             messages.put(systemMessage(screenObservationRuleText()))
         }
         if (!pureChat && delegationAvailable && (!trimChatSections || delegationResultRuleInPrefix)) {
@@ -536,7 +596,9 @@ internal object AgentPromptBuilder {
                             "当前终端只支持 identity=user，以 Eta 的 App UID 执行；Linux 内模拟 root 不授予 Android 特权。用户未指定环境的命令使用 terminal 的 action=open_and_exec，" + environmentRule + "；"
                         }) +
                         "连续多步 shell 工作先 action=open 获取 session_id，再 action=exec 复用会话；" +
-                        "长时间命令使用 async=true 启动后用 read_async_result 轮询，完成后 close；" +
+                        "有明确结束点的命令（包括耗时数分钟的命令）一律不加 async，把 timeout_ms 设为覆盖预期时长（最大 180000）等它同步返回，不要在命令运行期间反复发消息；" +
+                        "只有需要与其他工作并行、或要在运行期间查看增量输出时才用 async=true，" +
+                        "随后用 read_async_result 带 wait_ms 一次阻塞等到结束再 close（wait_ms 到点仍 running 就再用 wait_ms 续等，禁止连续空轮询刷屏）；" +
                         "需要长期驻留的后台服务（监听端口、Web 面板等）用 action=daemon_start 启动，daemon_list 查看状态、daemon_logs 读日志、daemon_stop 停止；" +
                         "守护任务不随 run 或会话结束回收，也不要用 nohup 或 & 手工后台化；" +
                         "async 后台命令是独立 shell，不要和 session_id 混用。不要调用 search_apps 查询“终端”或“Termux”。" +

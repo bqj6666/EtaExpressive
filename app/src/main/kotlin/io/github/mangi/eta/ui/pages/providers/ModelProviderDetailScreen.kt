@@ -37,6 +37,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -44,8 +47,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.adaptive.EtaConnectedGroupRow
 import io.github.mangi.eta.ui.adaptive.EtaDialog
 import io.github.mangi.eta.ui.adaptive.EtaDialogActions
+import io.github.mangi.eta.ui.adaptive.EtaExpressiveToggleButton
 import io.github.mangi.eta.ui.adaptive.EtaGroupHorizontalPadding
 import io.github.mangi.eta.ui.adaptive.EtaScaffold
 import io.github.mangi.eta.ui.adaptive.EtaScaffoldPage
@@ -82,9 +87,7 @@ import kotlinx.coroutines.withContext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Text as M3Text
 
 @Composable
@@ -347,8 +350,13 @@ internal fun ModelProviderDetailScreen(
 /**
  * 配置 / 模型视图切换。
  *
- * 与「Usage stats」页同款：官方单选分段按钮 [SingleChoiceSegmentedButtonRow] +
- * [SegmentedButton]（形状取官方 [SegmentedButtonDefaults]，配色/行高/字阶均使用官方默认值）。
+ * 与「Usage stats」页同款：官方连体 ToggleButton 组（M3E ButtonGroup connected 档）——
+ * [EtaConnectedGroupRow] 官方 2dp 缝 + [EtaExpressiveToggleButton]（官方 `ToggleButton` +
+ * `ButtonGroupDefaults.connected*ButtonShapes()`：外角全圆、内角 8dp、按压内角收到 4dp，
+ * 选中态 `checkedShape` = CornerFull 由官方 shapes 自带），等分整行。
+ * 取证（material3 1.5.0-alpha29 AAR javap）：connectedLeading/Middle/TrailingButtonShapes
+ * 均存在（三个形状参数可默认省略）、`ConnectedSpaceBetween` = 2dp（clinit `ldc2_w 2.0d`）、
+ * `connectedButtonCheckedShape` = `ShapeTokens.getCornerFull()`。
  */
 @Composable
 private fun ProviderTabs(
@@ -358,12 +366,19 @@ private fun ProviderTabs(
     modifier: Modifier = Modifier,
 ) {
     val safeIndex = selectedIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
-    SingleChoiceSegmentedButtonRow(modifier = modifier.fillMaxWidth()) {
+    EtaConnectedGroupRow(modifier = modifier.fillMaxWidth()) {
         tabs.forEachIndexed { index, label ->
-            SegmentedButton(
-                selected = safeIndex == index,
-                onClick = { onSelect(index) },
-                shape = SegmentedButtonDefaults.itemShape(index = index, count = tabs.size),
+            EtaExpressiveToggleButton(
+                checked = safeIndex == index,
+                onCheckedChange = { checked -> if (checked) onSelect(index) },
+                shapes = when (index) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    tabs.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { role = Role.RadioButton },
             ) {
                 M3Text(text = label)
             }

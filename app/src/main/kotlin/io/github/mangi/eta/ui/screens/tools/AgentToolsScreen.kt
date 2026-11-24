@@ -10,9 +10,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material3.Icon
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -23,14 +21,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
+import io.github.mangi.eta.ui.adaptive.EtaConnectedGroupRow
 import io.github.mangi.eta.ui.adaptive.EtaDimens
 import io.github.mangi.eta.ui.adaptive.EtaExpandChevron
+import io.github.mangi.eta.ui.adaptive.EtaExpressiveToggleButton
 import io.github.mangi.eta.ui.adaptive.EtaGroupHorizontalPadding
 import io.github.mangi.eta.ui.adaptive.EtaScaffoldPage
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedColumn
@@ -217,8 +219,13 @@ private fun toolCapabilityIcon(capabilityId: String): ImageVector =
 /**
  * 工具页顶部分段切换。
  *
- * Material 3 走官方单选分段按钮 [SingleChoiceSegmentedButtonRow] + [SegmentedButton]
- * （形状取官方 `SegmentedButtonDefaults.itemShape`，配色/行高/字阶全部使用官方默认值）。
+ * 官方连体 ToggleButton 组（M3E ButtonGroup connected 档）——[EtaConnectedGroupRow] 官方
+ * 2dp 缝 + [EtaExpressiveToggleButton]（官方 `ToggleButton` +
+ * `ButtonGroupDefaults.connected*ButtonShapes()`：外角全圆、内角 8dp、按压内角收到 4dp，
+ * 选中态 `checkedShape` = CornerFull 由官方 shapes 自带），等分整行。
+ * 取证（material3 1.5.0-alpha29 AAR javap）：connectedLeading/Middle/TrailingButtonShapes
+ * 均存在（三个形状参数可默认省略）、`ConnectedSpaceBetween` = 2dp（clinit `ldc2_w 2.0d`）、
+ * `connectedButtonCheckedShape` = `ShapeTokens.getCornerFull()`。
  */
 @Composable
 private fun ToolsSegmentTabs(
@@ -227,12 +234,19 @@ private fun ToolsSegmentTabs(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    SingleChoiceSegmentedButtonRow(modifier = modifier.fillMaxWidth()) {
+    EtaConnectedGroupRow(modifier = modifier.fillMaxWidth()) {
         tabs.forEachIndexed { index, title ->
-            SegmentedButton(
-                selected = index == selectedIndex,
-                onClick = { onSelect(index) },
-                shape = SegmentedButtonDefaults.itemShape(index = index, count = tabs.size),
+            EtaExpressiveToggleButton(
+                checked = index == selectedIndex,
+                onCheckedChange = { checked -> if (checked) onSelect(index) },
+                shapes = when (index) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    tabs.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { role = Role.RadioButton },
             ) {
                 M3Text(text = title)
             }

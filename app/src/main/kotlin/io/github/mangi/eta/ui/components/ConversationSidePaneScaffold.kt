@@ -57,7 +57,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.ManageHistory
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.rounded.AddComment
@@ -265,7 +264,6 @@ fun ConversationSidePaneScaffold(
     onNewConversation: () -> Unit = {},
     onOpenSearchHistory: () -> Unit = {},
     onOpenManageChats: () -> Unit = {},
-    onOpenManageFolders: () -> Unit = {},
     onSelectFolder: (String?) -> Unit = {},
     onRestoreConversation: (String) -> Unit = {},
     onConversationDeleteForever: (String) -> Unit = {},
@@ -493,7 +491,6 @@ fun ConversationSidePaneScaffold(
                     onConversationExport = onConversationExport,
                     onConversationAnalysisExport = onConversationAnalysisExport,
                     onOpenManageChats = onOpenManageChats,
-                    onOpenManageFolders = onOpenManageFolders,
                     onSelectFolder = onSelectFolder,
                     onRestoreConversation = onRestoreConversation,
                     onConversationDeleteForever = onConversationDeleteForever,
@@ -706,7 +703,6 @@ private fun ConversationPanePanel(
     onConversationExport: (ConversationSummaryUi) -> Unit = {},
     onConversationAnalysisExport: (ConversationSummaryUi) -> Unit = {},
     onOpenManageChats: () -> Unit = {},
-    onOpenManageFolders: () -> Unit = {},
     onSelectFolder: (String?) -> Unit = {},
     onRestoreConversation: (String) -> Unit = {},
     onConversationDeleteForever: (String) -> Unit = {},
@@ -745,7 +741,6 @@ private fun ConversationPanePanel(
         onConversationExport = onConversationExport,
         onConversationAnalysisExport = onConversationAnalysisExport,
         onOpenManageChats = onOpenManageChats,
-        onOpenManageFolders = onOpenManageFolders,
         onSelectFolder = onSelectFolder,
         onRestoreConversation = onRestoreConversation,
         onConversationDeleteForever = onConversationDeleteForever,
@@ -829,7 +824,6 @@ private fun Material3ConversationPane(
     onConversationExport: (ConversationSummaryUi) -> Unit,
     onConversationAnalysisExport: (ConversationSummaryUi) -> Unit,
     onOpenManageChats: () -> Unit,
-    onOpenManageFolders: () -> Unit,
     onSelectFolder: (String?) -> Unit,
     onRestoreConversation: (String) -> Unit = {},
     onConversationDeleteForever: (String) -> Unit = {},
@@ -961,17 +955,8 @@ private fun Material3ConversationPane(
                         )
                     }
                 }
-                Spacer(modifier = Modifier.width(ButtonGroupDefaults.ConnectedSpaceBetween))
-                // 独立胶囊按钮（DrawerGroupPosition.Single）：始终贴右，不随文件夹列表滚动。
-                // 文件夹的新建 / 重命名 / 删除都在独立管理页完成，这里只负责入口。
-                // 图标用 FolderOpen 与左侧文件夹胶囊的 Folder 区分：这是「进入管理」的动作。
-                Material3DrawerChip(
-                    text = stringResource(R.string.drawer_manage_folders),
-                    position = DrawerGroupPosition.Single,
-                    selected = false,
-                    leadingIcon = Icons.Rounded.FolderOpen,
-                    onClick = onOpenManageFolders,
-                )
+                // 文件夹的新建 / 重命名 / 删除统一收进管理页（抽屉工具栏「管理」入口），
+                // 这里不再提供独立管理胶囊。
             }
             }
             Spacer(modifier = Modifier.height(12.dp))
@@ -1054,6 +1039,14 @@ private fun Material3ConversationPane(
                                     onTogglePin = { onConversationTogglePin(conversation) },
                                     onExport = { onConversationExport(conversation) },
                                     onExportAnalysis = { onConversationAnalysisExport(conversation) },
+                                    // 官方 animateItem：删除/移动文件夹淡出、置顶跨组 = 同 key
+                                    // 换位弹簧（分组各自 itemsIndexed 共用同一 key 空间）；
+                                    // 入场不播动画，避免抽屉首开全列表闪淡入。
+                                    modifier = Modifier.animateItem(
+                                        fadeInSpec = null,
+                                        fadeOutSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                                        placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                                    ),
                                 )
                             }
                         }
@@ -1279,12 +1272,12 @@ private fun Material3DrawerToolbar(
                 icon = Icons.Rounded.Search,
                 contentDescription = stringResource(R.string.action_search_history),
                 contentColor = toolbarColors.toolbarContentColor,
-                // 与管理聊天页的放大镜同一个目的地：全文搜索页（跨会话检索标题与消息）。
+                // 与管理页的放大镜同一个目的地：全文搜索页（跨会话检索标题与消息）。
                 onClick = onOpenSearchHistory,
             )
             Material3DrawerToolbarButton(
                 icon = Icons.Rounded.ManageHistory,
-                contentDescription = stringResource(R.string.drawer_manage_chats),
+                contentDescription = stringResource(R.string.manage_page_title),
                 contentColor = toolbarColors.toolbarContentColor,
                 onClick = onOpenManageChats,
             )
@@ -1426,6 +1419,7 @@ private fun Material3ConversationRow(
     onTogglePin: () -> Unit,
     onExport: () -> Unit,
     onExportAnalysis: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var showActionMenu by remember { mutableStateOf(false) }
     // 「等待回答」问号徽标的读屏说明（行尾 trailing 槽内引用）。
@@ -1434,7 +1428,7 @@ private fun Material3ConversationRow(
         // 组内行距走官方分段缝隙（2dp），组末行补足分组间距（末组由列表底部留白收尾）；
         // 缝隙放在外层，长按菜单的锚点仍紧贴本行。
         Column(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .padding(
                     bottom = if (index == count - 1) {

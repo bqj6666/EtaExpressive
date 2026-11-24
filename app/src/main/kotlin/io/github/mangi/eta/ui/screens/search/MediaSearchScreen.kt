@@ -57,9 +57,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -85,6 +83,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -108,9 +108,10 @@ import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.MediaKind
 import io.github.mangi.eta.ui.adaptive.EtaButtonStyle
 import io.github.mangi.eta.ui.adaptive.EtaClickableRow
-import io.github.mangi.eta.ui.adaptive.EtaDecorativeShape
+import io.github.mangi.eta.ui.adaptive.EtaConnectedGroupRow
 import io.github.mangi.eta.ui.adaptive.EtaDialog
 import io.github.mangi.eta.ui.adaptive.EtaDialogActions
+import io.github.mangi.eta.ui.adaptive.EtaExpressiveToggleButton
 import io.github.mangi.eta.ui.adaptive.EtaGroupHorizontalPadding
 import io.github.mangi.eta.ui.adaptive.EtaIconButton
 import io.github.mangi.eta.ui.adaptive.EtaIconSize
@@ -133,10 +134,9 @@ import io.github.mangi.eta.ui.adaptive.EtaSlider
 import io.github.mangi.eta.ui.adaptive.EtaText
 import io.github.mangi.eta.ui.adaptive.EtaTextStyle
 import io.github.mangi.eta.ui.adaptive.EtaTooltip
-import io.github.mangi.eta.ui.adaptive.etaRandomDecorativeShape
 import io.github.mangi.eta.ui.adaptive.rememberEtaSheetState
-import io.github.mangi.eta.ui.adaptive.EtaDimens
 import io.github.mangi.eta.ui.components.ContainedMorphLoadingIndicator
+import io.github.mangi.eta.ui.components.EtaStatusPage
 import io.github.mangi.eta.ui.components.horizontalScrollEdgeFade
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.navigation.AppRoute
@@ -667,8 +667,10 @@ internal fun MediaSearchScreen(
                     )
                 } else {
                     item(key = "search-idle") {
-                        MediaSearchEmptyState(
-                            text = stringResource(R.string.media_search_hint),
+                        // 官方 Empty state 观感收敛到共享状态页 [EtaStatusPage]（与其它搜索页同源）。
+                        EtaStatusPage(
+                            icon = Icons.Rounded.Search,
+                            title = stringResource(R.string.media_search_hint),
                             modifier = Modifier.fillParentMaxSize(),
                         )
                     }
@@ -769,15 +771,24 @@ internal fun MediaSearchScreen(
                                     selectionMode = true
                                     selectedKeys = selectedKeys + hit.sourceKey
                                 },
-                                modifier = Modifier.padding(
-                                    start = EtaGroupHorizontalPadding,
-                                    end = EtaGroupHorizontalPadding,
-                                    bottom = if (index == hits.lastIndex) {
-                                        EtaSegmentedGroupSpacing
-                                    } else {
-                                        EtaSegmentedGap
-                                    },
-                                ),
+                                // 官方 animateItem（会话管理页同款口径）：批量删除/类型过滤的
+                                // 行消失淡出 + 补位弹簧；流式分片按相关度序追加、既有行 key 不动，
+                                // placement 不会触发；入场不播动画，避免换词整表闪淡入。
+                                modifier = Modifier
+                                    .animateItem(
+                                        fadeInSpec = null,
+                                        fadeOutSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                                        placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                                    )
+                                    .padding(
+                                        start = EtaGroupHorizontalPadding,
+                                        end = EtaGroupHorizontalPadding,
+                                        bottom = if (index == hits.lastIndex) {
+                                            EtaSegmentedGroupSpacing
+                                        } else {
+                                            EtaSegmentedGap
+                                        },
+                                    ),
                             )
                         }
                     }
@@ -843,6 +854,12 @@ internal fun MediaSearchScreen(
                             selectionMode = true
                             selectedKeys = selectedKeys + hit.sourceKey
                         },
+                        // 宫格同口径：删除/过滤位移淡出 + 补位弹簧；入场不播动画。
+                        modifier = Modifier.animateItem(
+                            fadeInSpec = null,
+                            fadeOutSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                            placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                        ),
                     )
                 }
             }
@@ -1096,50 +1113,6 @@ private fun MediaFilterBar(
 }
 
 /**
- * 空闲态：官方 Empty state 观感——装饰形状 + 放大镜 + 一句说明（与其它搜索页一致）。
- *
- * 装饰形状每次进页面换一枚轮廓，页内保持稳定（纯装饰，不承载信息）。
- */
-@Composable
-private fun MediaSearchEmptyState(
-    text: String,
-    modifier: Modifier = Modifier,
-) {
-    val decorativeShape = remember { etaRandomDecorativeShape() }
-    Box(
-        modifier = modifier,
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier.padding(horizontal = 32.dp),
-        ) {
-            Box(
-                modifier = Modifier.size(EtaDimens.EmptyStateShapeSize),
-                contentAlignment = Alignment.Center,
-            ) {
-                EtaDecorativeShape(
-                    modifier = Modifier.size(EtaDimens.EmptyStateShapeSize),
-                    shape = decorativeShape,
-                )
-                Icon(
-                    imageVector = Icons.Rounded.Search,
-                    contentDescription = null,
-                    modifier = Modifier.size(EtaDimens.EmptyStateGraphicIconSize),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            EtaText(
-                text = text,
-                style = EtaTextStyle.Secondary,
-                textAlign = TextAlign.Center,
-            )
-        }
-    }
-}
-
-/**
  * 顶栏搜索动作钮：语义检索不能随输入实时触发（每次都要跑嵌入模型），常驻显式按钮，
  * 放大镜图标与设置主页的搜索入口同一套。列表与宫格两套骨架共用。
  */
@@ -1369,16 +1342,14 @@ private fun MediaThresholdRow(
 }
 
 /**
- * 视图模式行：标签 + 官方单选分段按钮（列表 / 宫格），切换即时回调（调用方落盘）。
+ * 视图模式行：标签 + 官方连体 ToggleButton 组（列表 / 宫格），切换即时回调（调用方落盘）。
  *
- * 走官方 [SingleChoiceSegmentedButtonRow] + [SegmentedButton]（签名已对 material3-android
- * 1.5.0-alpha29 sources 核验：`SegmentedButton(selected, onClick, shape, modifier, enabled,
- * colors, border, contentPadding, interactionSource, icon, label)`，
- * `SegmentedButtonDefaults.itemShape(index, count, baseShape)` 为 @Composable），写法照抄
- * UsageStatsScreen 的 UsageStatsTabs 范本：形状取官方 itemShape，配色 / 行高 / 字阶均为
- * 官方默认值。取证（RULES §1.3）：`~/.gradle/caches/modules-2/files-2.1/
- * androidx.compose.material3/material3-android/1.5.0-alpha29/…-sources.jar` →
- * `commonMain/…/material3/SegmentedButton.kt`；该族无 ExperimentalMaterial3Api 注解。
+ * 连体档 = [EtaConnectedGroupRow] 官方 2dp 缝 + [EtaExpressiveToggleButton]（官方
+ * `ToggleButton` + `ButtonGroupDefaults.connected*ButtonShapes()`：外角全圆、内角 8dp、
+ * 按压内角收到 4dp，选中态 `checkedShape` = CornerFull 由官方 shapes 自带），等分整行。
+ * 取证（material3 1.5.0-alpha29 AAR javap）：connectedLeading/Middle/TrailingButtonShapes
+ * 均存在（三个形状参数可默认省略）、`ConnectedSpaceBetween` = 2dp（clinit `ldc2_w 2.0d`）、
+ * `connectedButtonCheckedShape` = `ShapeTokens.getCornerFull()`。
  */
 @Composable
 private fun MediaViewModeRow(
@@ -1395,7 +1366,7 @@ private fun MediaViewModeRow(
         ),
     ) {
         EtaText(text = stringResource(R.string.media_view_mode_label))
-        SingleChoiceSegmentedButtonRow(
+        EtaConnectedGroupRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = EtaSegmentedTitleSpacing),
@@ -1404,13 +1375,22 @@ private fun MediaViewModeRow(
                 false to R.string.media_view_mode_list,
                 true to R.string.media_view_mode_grid,
             ).forEachIndexed { index, (grid, labelRes) ->
-                SegmentedButton(
-                    selected = viewGrid == grid,
-                    onClick = {
-                        TouchHaptics.click(view)
-                        onViewGridChange(grid)
+                EtaExpressiveToggleButton(
+                    checked = viewGrid == grid,
+                    onCheckedChange = { checked ->
+                        if (checked) {
+                            TouchHaptics.click(view)
+                            onViewGridChange(grid)
+                        }
                     },
-                    shape = SegmentedButtonDefaults.itemShape(index = index, count = 2),
+                    shapes = when (index) {
+                        0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                        1 -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                        else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { role = Role.RadioButton },
                 ) {
                     Text(text = stringResource(labelRes))
                 }

@@ -33,6 +33,8 @@ private val appRouteTypes: List<KClass<out AppRoute>> = listOf(
     AppRoute.SystemTakeover::class,
     AppRoute.About::class,
     AppRoute.AboutCredits::class,
+    AppRoute.AboutLicenses::class,
+    AppRoute.AboutLicenseDetail::class,
     AppRoute.SpeechSettings::class,
     AppRoute.TtsSettings::class,
     AppRoute.VoiceSettings::class,
@@ -74,7 +76,6 @@ private val appRouteTypes: List<KClass<out AppRoute>> = listOf(
     AppRoute.AssistantEdit::class,
     AppRoute.UsageStats::class,
     AppRoute.ManageChats::class,
-    AppRoute.ManageFolders::class,
     AppRoute.ConversationTrash::class,
     AppRoute.ConversationTrashSearch::class,
     AppRoute.MessageSearch::class,
@@ -89,6 +90,7 @@ private val appRouteTypes: List<KClass<out AppRoute>> = listOf(
     AppRoute.ToolRecipeEdit::class,
     AppRoute.RemoteAgents::class,
     AppRoute.RemoteAgentEditor::class,
+    AppRoute.PickupCodes::class,
 )
 
 /** 显式登记表的类型集合（容器兜底用；O(1) 判重，避免每次重组线性扫描 66 项）。 */

@@ -40,6 +40,9 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -54,8 +57,10 @@ import io.github.mangi.eta.data.repository.formatStatCount
 import io.github.mangi.eta.data.repository.formatTokenCount
 import io.github.mangi.eta.data.repository.heatmapAlpha
 import io.github.mangi.eta.data.repository.heatmapQuartiles
+import io.github.mangi.eta.ui.adaptive.EtaConnectedGroupRow
 import io.github.mangi.eta.ui.adaptive.EtaExpandChevron
 import io.github.mangi.eta.ui.adaptive.EtaDimens
+import io.github.mangi.eta.ui.adaptive.EtaExpressiveToggleButton
 import io.github.mangi.eta.ui.adaptive.EtaGroupHorizontalPadding
 import io.github.mangi.eta.ui.adaptive.EtaLoadingGate
 import io.github.mangi.eta.ui.adaptive.EtaLoadingSlot
@@ -83,9 +88,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Text as M3Text
 import androidx.compose.material3.toShape
 
@@ -156,8 +159,13 @@ internal fun UsageStatsScreen(onBack: () -> Unit) {
 /**
  * 概览 / 模型视图切换。
  *
- * 走官方单选分段按钮 [SingleChoiceSegmentedButtonRow] + [SegmentedButton]
- * （形状取官方 [SegmentedButtonDefaults]，配色/行高/字阶均使用官方默认值）。
+ * 官方连体 ToggleButton 组（M3E ButtonGroup connected 档）——[EtaConnectedGroupRow] 官方
+ * 2dp 缝 + [EtaExpressiveToggleButton]（官方 `ToggleButton` +
+ * `ButtonGroupDefaults.connected*ButtonShapes()`：外角全圆、内角 8dp、按压内角收到 4dp，
+ * 选中态 `checkedShape` = CornerFull 由官方 shapes 自带），等分整行。
+ * 取证（material3 1.5.0-alpha29 AAR javap）：connectedLeading/Middle/TrailingButtonShapes
+ * 均存在（三个形状参数可默认省略）、`ConnectedSpaceBetween` = 2dp（clinit `ldc2_w 2.0d`）、
+ * `connectedButtonCheckedShape` = `ShapeTokens.getCornerFull()`。
  */
 @Composable
 private fun UsageStatsTabs(
@@ -169,12 +177,19 @@ private fun UsageStatsTabs(
         stringResource(R.string.stats_tab_overview) to UsageStatsTab.Overview,
         stringResource(R.string.stats_tab_models) to UsageStatsTab.Models,
     )
-    SingleChoiceSegmentedButtonRow(modifier = modifier.fillMaxWidth()) {
+    EtaConnectedGroupRow(modifier = modifier.fillMaxWidth()) {
         tabs.forEachIndexed { index, (label, tab) ->
-            SegmentedButton(
-                selected = selected == tab,
-                onClick = { onSelect(tab) },
-                shape = SegmentedButtonDefaults.itemShape(index = index, count = tabs.size),
+            EtaExpressiveToggleButton(
+                checked = selected == tab,
+                onCheckedChange = { checked -> if (checked) onSelect(tab) },
+                shapes = when (index) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    tabs.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { role = Role.RadioButton },
             ) {
                 M3Text(text = label)
             }
@@ -399,16 +414,20 @@ private fun ModelUsagePane(
             },
         )
         if (filtered.providers.isEmpty()) {
-            ListEmptyState(
-                title = stringResource(
-                    if (startBound.isSet || endBound.isSet) {
-                        R.string.stats_model_filter_empty
-                    } else {
-                        R.string.stats_model_empty
-                    },
-                ),
+            // 非整页零态走分段卡片做底板（全仓空态两档约定）；面板已自带 16dp 水平边距。
+            EtaSegmentedItemContainer(
                 modifier = Modifier.padding(bottom = EtaSegmentedGroupSpacing),
-            )
+            ) {
+                ListEmptyState(
+                    title = stringResource(
+                        if (startBound.isSet || endBound.isSet) {
+                            R.string.stats_model_filter_empty
+                        } else {
+                            R.string.stats_model_empty
+                        },
+                    ),
+                )
+            }
         } else {
             EtaSegmentedColumn(
                 modifier = Modifier.padding(bottom = EtaSegmentedGroupSpacing),

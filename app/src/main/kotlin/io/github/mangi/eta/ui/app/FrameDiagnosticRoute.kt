@@ -22,6 +22,8 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     AppRoute.SystemTakeover -> FrameDiagnosticPage.Settings
     AppRoute.About -> FrameDiagnosticPage.Settings
     AppRoute.AboutCredits -> FrameDiagnosticPage.Settings
+    AppRoute.AboutLicenses -> FrameDiagnosticPage.Settings
+    is AppRoute.AboutLicenseDetail -> FrameDiagnosticPage.Settings
     AppRoute.SpeechSettings -> FrameDiagnosticPage.VoiceSettings
     AppRoute.TtsSettings -> FrameDiagnosticPage.VoiceSettings
     AppRoute.VoiceSettings -> FrameDiagnosticPage.VoiceSettings
@@ -63,7 +65,6 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     is AppRoute.AssistantEdit -> FrameDiagnosticPage.AssistantEdit
     AppRoute.UsageStats -> FrameDiagnosticPage.UsageStats
     AppRoute.ManageChats -> FrameDiagnosticPage.ManageChats
-    AppRoute.ManageFolders -> FrameDiagnosticPage.ManageChats
     AppRoute.ConversationTrash -> FrameDiagnosticPage.ManageChats
     AppRoute.ConversationTrashSearch -> FrameDiagnosticPage.ManageChats
     is AppRoute.MessageSearch -> FrameDiagnosticPage.ManageChats
@@ -78,4 +79,5 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     is AppRoute.ToolRecipeEdit -> FrameDiagnosticPage.ToolRecipeEdit
     AppRoute.RemoteAgents -> FrameDiagnosticPage.Settings
     is AppRoute.RemoteAgentEditor -> FrameDiagnosticPage.Settings
+    AppRoute.PickupCodes -> FrameDiagnosticPage.Settings
 }

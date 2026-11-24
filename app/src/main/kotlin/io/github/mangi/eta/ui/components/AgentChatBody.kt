@@ -311,7 +311,6 @@ internal fun AgentChatBody(
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
     onContinue: () -> Unit = {},
-    onAbortPausedRun: () -> Unit = {},
     onAttachImage: (String) -> Unit,
     onAttachVideo: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
@@ -572,7 +571,6 @@ internal fun AgentChatBody(
                 onModelSelected = onModelSelected,
                 onStop = onStop,
                 onContinue = onContinue,
-                onAbortPausedRun = onAbortPausedRun,
                 onAttachImage = onAttachImage,
                 onAttachVideo = onAttachVideo,
                 onRemoveImage = onRemoveImage,
@@ -658,7 +656,6 @@ internal fun AgentChatScaffold(
     onModelSelected: (String, String) -> Unit,
     onStop: () -> Unit,
     onContinue: () -> Unit = {},
-    onAbortPausedRun: () -> Unit = {},
     onAttachImage: (String) -> Unit,
     onAttachVideo: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
@@ -783,7 +780,6 @@ internal fun AgentChatScaffold(
                 onModelSelected = onModelSelected,
                 onStop = onStop,
                 onContinue = onContinue,
-                onAbortPausedRun = onAbortPausedRun,
                 onAttachImage = onAttachImage,
                 onAttachVideo = onAttachVideo,
                 onRemoveImage = onRemoveImage,
@@ -1037,9 +1033,6 @@ internal fun AgentConversationMessages(
     // Generation only relaxes branching on PREVIOUS completed turns. The current
     // turn has no action bar until it closes, even between text/tool blocks.
     val turnFooters = timelineDerived.turnFooters
-    // 时间线最末的页脚行：滚到底时它的下侧收窄（FooterBottomMostGap），让按钮组
-    // 中线与右侧轮次跳转按钮组对齐（39dp 账目见 AgentChatSpacing.FooterBottomMostGap）。
-    val bottomMostFooterRowKey = timelineRows.lastOrNull { it.key in turnFooters }?.key
     val finalResultMessageIds = timelineDerived.finalResultMessageIds
     // 相邻分段卡片行的接缝投影：任意两张相邻卡片行（含跨批次组末↔组首、折叠摘要↔
     // 步骤、回报卡↔卡片行）相接处取内圆 + 1dp 薄边（组缝节奏）；页脚锚在两行之间时
@@ -2100,12 +2093,6 @@ internal fun AgentConversationMessages(
                         speechPreface = speechPrefaces[owner.id].orEmpty(),
                         messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
                         branchEnabled = branchEnabled,
-                        // 最末页脚下侧收窄到 4dp（对齐右侧跳转按钮），其余保持基准半距 8dp。
-                        bottomGap = if (entry.key == bottomMostFooterRowKey) {
-                            AgentChatSpacing.FooterBottomMostGap
-                        } else {
-                            AgentChatSpacing.RowBaseHalf
-                        },
                         // 页脚上侧按锚点行补差：锚在文字 / 分割线 / 用户气泡（底 8dp）上时不再另加，
                         // 锚在工作组行（底 2dp 薄边）上时补 6dp——有效上间隙统一 10dp（含按钮行内层 2）。
                         modifier = if (entry is AgentTimelineRow.WorkSummary || entry is AgentTimelineRow.WorkStep) {
@@ -2406,7 +2393,6 @@ private fun AgentChatBottomBar(
     onModelSelected: (String, String) -> Unit,
     onStop: () -> Unit,
     onContinue: () -> Unit = {},
-    onAbortPausedRun: () -> Unit = {},
     onAttachImage: (String) -> Unit,
     onAttachVideo: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
@@ -2524,7 +2510,6 @@ private fun AgentChatBottomBar(
                 onModelSelected = onModelSelected,
                 onStop = onStop,
                 onContinue = onContinue,
-                onAbortPausedRun = onAbortPausedRun,
                 onAttachImage = onAttachImage,
                 onAttachVideo = onAttachVideo,
                 onRemoveImage = onRemoveImage,
@@ -2619,9 +2604,10 @@ private val ChatInputBarBottomGap = 12.dp
 /**
  * 跳转轮次按钮组「中线」距列表底部的距离。滚到底时，最后一轮页脚动作组
  * （复制/朗读/fork…）的中线也落在这个高度，两组按钮因此同高、读作一行并列控件。
- * 构成：输入栏间距 [ConversationComposerGap]（14dp）+ 底部哨兵（1dp）+ 最末页脚
- * 下侧收窄距（[AgentChatSpacing.FooterBottomMostGap]，4dp）+ 页脚按钮半径
- * （40dp 官方 Small 容器，半径 20dp）= 39dp。
+ * 构成（固定常量，不随页脚容器档位变化）：输入栏间距 [ConversationComposerGap]（14dp）
+ * + 底部哨兵（1dp）+ 页脚垂直内边距（8dp）+ 页脚按钮半径（16dp）。
+ * 页脚容器实际走 small 档 40dp（半径 20dp），比本常量低 4dp，故页脚组由
+ * `AgentChatSpacing.ActionRowCenterLift` 下移对齐，本常量与右侧定位保持不变。
  */
 private val TurnNavigationCenterAboveBottom = 39.dp
 
@@ -3511,4 +3497,3 @@ internal class ComposerRestClip(private val occlusion: Dp) : Shape {
 
     override fun hashCode(): Int = occlusion.hashCode()
 }
-

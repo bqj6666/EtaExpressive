@@ -20,15 +20,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -42,7 +40,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -56,6 +56,8 @@ import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.ProviderBalanceState
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.ModelPickerCheckRow
+import io.github.mangi.eta.ui.adaptive.EtaConnectedGroupRow
+import io.github.mangi.eta.ui.adaptive.EtaExpressiveToggleButton
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedColumn
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedGroupSpacing
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedRow
@@ -81,7 +83,8 @@ import kotlinx.coroutines.withContext
  * 结构：
  * 1. 标题行：标题 + 行尾配置图标按钮（随页签切换图标与目标：模型 / 助手）。
  *    （关闭走 ModalBottomSheet 的下拉 / 点遮罩，不放关闭按钮。）
- * 2. 官方单选分段按钮的页签：模型 / 助手。
+ * 2. 连体 ToggleButton 页签：模型 / 助手（官方 M3E ButtonGroup connected 档——2dp 缝 +
+ *    connected*Shapes，等分整行；选中态官方 morph 到 CornerFull，无选中 ✓）。
  *    - 模型页签：官方搜索框 + 服务商分类标题 + 分组内的官方分段单选行（全部平铺，不折叠）。
  *    - 助手页签：官方搜索框 + KernelSU 式分段列表（行尾三点菜单提供复制 / 编辑 / 删除）。
  * 3. 底部固定两行「思考档位」「上下文用量」，复用输入区原有的两个控件（含各自弹窗 /
@@ -174,12 +177,24 @@ internal fun M3ComposerPickerSheet(
                 stringResource(R.string.conversation_dock_models),
                 stringResource(R.string.assistant_list_title),
             )
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            // 连体 ToggleButton 页签（官方 M3E ButtonGroup connected 档）：EtaConnectedGroupRow
+            // 官方 2dp 缝 + connected*ButtonShapes（外角全圆、内角 8dp，选中态 checkedShape =
+            // CornerFull 由官方 shapes 自带），等分整行；选中 primary/onPrimary、未选中
+            // surfaceContainerHighest/onSurface。取证（alpha29 AAR javap）：
+            // connected*ButtonShapes 与 ConnectedSpaceBetween = 2dp（clinit ldc2_w 2.0d）均实证。
+            EtaConnectedGroupRow(modifier = Modifier.fillMaxWidth()) {
                 tabs.forEachIndexed { index, title ->
-                    SegmentedButton(
-                        selected = index == tabIndex,
-                        onClick = { tabIndex = index },
-                        shape = SegmentedButtonDefaults.itemShape(index = index, count = tabs.size),
+                    EtaExpressiveToggleButton(
+                        checked = index == tabIndex,
+                        onCheckedChange = { if (it) tabIndex = index },
+                        shapes = when (index) {
+                            0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                            tabs.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                            else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics { role = Role.RadioButton },
                     ) {
                         Text(text = title)
                     }

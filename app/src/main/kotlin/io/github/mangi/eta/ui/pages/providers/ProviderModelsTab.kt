@@ -69,6 +69,7 @@ import io.github.mangi.eta.ui.adaptive.EtaSelectionBarOverlay
 import io.github.mangi.eta.ui.adaptive.EtaSelectionBottomSpacer
 import io.github.mangi.eta.ui.adaptive.EtaSelectionEntryAction
 import io.github.mangi.eta.ui.adaptive.EtaSegmentedColumn
+import io.github.mangi.eta.ui.adaptive.EtaSegmentedItemContainer
 import io.github.mangi.eta.ui.adaptive.EtaDialog
 import io.github.mangi.eta.ui.adaptive.EtaDialogActions
 import io.github.mangi.eta.ui.adaptive.EtaPickerSheet
@@ -326,14 +327,18 @@ internal fun ProviderModelsTab(
                     EtaSectionTitle(text = modelListTitle)
                 }
                 item(key = "models_empty", contentType = "empty") {
-                    // 与供应商列表页一致：空态是无容器的居中文本，不再塞进分段容器。
-                    ListEmptyState(
-                        title = if (provider.models.isEmpty()) {
-                            context.getString(R.string.page_there_is_no_model_yet_please_pull_it_from_the_remote_ced865)
-                        } else {
-                            context.getString(R.string.page_no_matching_model_found_ae7e96)
-                        },
-                    )
+                    // 非整页零态走分段卡片做底板（全仓空态两档约定，与供应商列表页一致）。
+                    EtaSegmentedItemContainer(
+                        modifier = Modifier.padding(horizontal = EtaGroupHorizontalPadding),
+                    ) {
+                        ListEmptyState(
+                            title = if (provider.models.isEmpty()) {
+                                context.getString(R.string.page_there_is_no_model_yet_please_pull_it_from_the_remote_ced865)
+                            } else {
+                                context.getString(R.string.page_no_matching_model_found_ae7e96)
+                            },
+                        )
+                    }
                 }
             } else {
                 item(key = "models_title", contentType = "section_title") {
@@ -382,6 +387,13 @@ internal fun ProviderModelsTab(
                     ModelListGroupItem(
                         isFirst = index == 0,
                         isLast = index == filteredModels.lastIndex,
+                        // 官方 animateItem（会话管理页同款口径）：批量删除淡出 + 补位弹簧；
+                        // 入场不播动画，避免首屏全列表闪淡入（远端拉取整表替换同受益）。
+                        modifier = Modifier.animateItem(
+                            fadeInSpec = null,
+                            fadeOutSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+                            placementSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                        ),
                     ) {
                         ModelListItem(
                             model = model,
@@ -556,13 +568,14 @@ internal fun ProviderModelsTab(
 private fun ModelListGroupItem(
     isFirst: Boolean,
     isLast: Boolean,
+    modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
     // M3：容器底色与首尾圆角交给官方 ListItem（segmentedColors + segmentedShapes），
     // 行间露出背景缝隙（EtaSegmentedGap），末项补足组间距（EtaSegmentedGroupSpacing），
     // 水平取组边距 token，与供应商列表页一致。
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(
                 start = EtaGroupHorizontalPadding,
@@ -773,9 +786,12 @@ private fun RemoteModelPickDialog(
             )
         }
         if (visible.isEmpty()) {
-            ListEmptyState(
-                title = stringResource(R.string.page_no_matching_model_found_ae7e96),
-            )
+            // 弹窗内非整页零态：同样用分段卡片做底板（行本身不带水平边距，卡片对齐行）。
+            EtaSegmentedItemContainer {
+                ListEmptyState(
+                    title = stringResource(R.string.page_no_matching_model_found_ae7e96),
+                )
+            }
         } else {
             LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
                 itemsIndexed(

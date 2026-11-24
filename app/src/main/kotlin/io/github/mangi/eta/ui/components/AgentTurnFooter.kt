@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -21,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
@@ -73,9 +73,6 @@ internal fun AgentTurnFooter(
     branchEnabled: Boolean,
     speechPreface: String = "",
     isRunActive: Boolean = false,
-    // 下侧外距默认是轮间基准半距（与下一行合成 16dp）；时间线最末的页脚由调用方
-    // 收窄到 FooterBottomMostGap，让按钮组中线与右侧跳转按钮对齐（见常量 KDoc）。
-    bottomGap: Dp = AgentChatSpacing.RowBaseHalf,
     modifier: Modifier = Modifier,
 ) {
     if (revealPending || isRunActive) return
@@ -115,11 +112,11 @@ internal fun AgentTurnFooter(
         modifier = modifier
             .testTag("turn-footer:${message.id}")
             // 上侧不另加外距：有效上间隙 = 文字行底 8 + 按钮行内层 2 = 10dp，按钮组贴住所属回复；
-            // 下侧默认基准半距与下一行合成 16dp 轮间间隙（最末页脚收窄，见 [bottomGap]）。
+            // 下侧基准半距与下一行合成 16dp 轮间间隙。
             .padding(
                 start = AgentChatSpacing.RowHorizontal,
                 end = AgentChatSpacing.RowHorizontal,
-                bottom = bottomGap,
+                bottom = AgentChatSpacing.RowBaseHalf,
             ),
     )
 }
@@ -167,12 +164,20 @@ internal fun AgentMessageActionRow(
     val onRegenerateClick: () -> Unit = { TouchHaptics.click(view); onRegenerate() }
     val onDeleteClick: () -> Unit = { TouchHaptics.click(view); onDelete() }
     Row(
-        modifier = modifier.fillMaxWidth().padding(top = AgentChatSpacing.ActionRowTopGap),
+        modifier = modifier
+            // 滚到底时与右侧轮次跳转组中轴对齐：两组容器同为 small 档 40dp，但本行中线
+            // 比跳转组固定中线高 4dp，故整行下移该差值（只改放置，不改布局流中的间距）。
+            .offset(y = AgentChatSpacing.ActionRowCenterLift)
+            .fillMaxWidth()
+            .padding(top = AgentChatSpacing.ActionRowTopGap),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // M3 Expressive：KernelSU 同款官方连体按钮组 —— EtaConnectedGroupRow
         // （ConnectedSpaceBetween）+ 每个动作一个官方 ToggleButton（连体形状按
         // 首位/中间/末位分配），尺寸统一 ToggleButtonSize.Small，配色 secondaryContainer。
+        // 容器走官方 small 档（smallContainerSize = 40dp），图标必须配套同档官方令牌
+        // smallIconSize（24dp，material3 1.5.0-alpha29 源码核实：SmallIconButtonTokens
+        // ContainerHeight 40 / IconSize 24），与右侧 TurnNavigation 组的图标规格对齐。
         val copyDescription = stringResource(if (copied) R.string.copy_copied else R.string.copy_answer)
         val copyTooltip = stringResource(R.string.ui_copy_4edd1d)
         val branchLabel = stringResource(R.string.ui_branch_conversation)
@@ -188,7 +193,7 @@ internal fun AgentMessageActionRow(
                             Icon(
                                 imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
                                 contentDescription = copyDescription,
-                                modifier = Modifier.size(IconButtonDefaults.extraSmallIconSize),
+                                modifier = Modifier.size(IconButtonDefaults.smallIconSize),
                             )
                         }
                     }
@@ -206,7 +211,7 @@ internal fun AgentMessageActionRow(
                             Icon(
                                 imageVector = Icons.AutoMirrored.Rounded.CallSplit,
                                 contentDescription = branchLabel,
-                                modifier = Modifier.size(IconButtonDefaults.extraSmallIconSize),
+                                modifier = Modifier.size(IconButtonDefaults.smallIconSize),
                             )
                         }
                     }
@@ -217,7 +222,7 @@ internal fun AgentMessageActionRow(
                             Icon(
                                 imageVector = Icons.Rounded.Refresh,
                                 contentDescription = regenerateDescription,
-                                modifier = Modifier.size(IconButtonDefaults.extraSmallIconSize),
+                                modifier = Modifier.size(IconButtonDefaults.smallIconSize),
                             )
                         }
                     }
@@ -228,7 +233,7 @@ internal fun AgentMessageActionRow(
                             Icon(
                                 imageVector = Icons.Rounded.Delete,
                                 contentDescription = deleteDescription,
-                                modifier = Modifier.size(IconButtonDefaults.extraSmallIconSize),
+                                modifier = Modifier.size(IconButtonDefaults.smallIconSize),
                             )
                         }
                     }
