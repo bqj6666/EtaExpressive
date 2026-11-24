@@ -1,0 +1,109 @@
+name: Eta Release (CI)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eta-release-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: 构建 Release 并发布
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: 配置 JDK 25
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: 配置 Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+        with:
+          cache-provider: basic
+
+      - name: 接受 Android SDK 许可证
+        run: |
+          set -euo pipefail
+          sdkmanager="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          if [[ -z "$sdkmanager" ]]; then
+            echo "::error::未找到 sdkmanager"
+            exit 1
+          fi
+          yes | "$sdkmanager" --licenses >/dev/null || true
+          "$sdkmanager" --channel=3 "platforms;android-37.0"
+
+      - name: 准备签名密钥
+        env:
+          ETA_RELEASE_KEYSTORE_BASE64: ${{ secrets.ETA_RELEASE_KEYSTORE_BASE64 }}
+          ETA_RELEASE_STORE_PASSWORD: ${{ secrets.ETA_RELEASE_STORE_PASSWORD }}
+          ETA_RELEASE_KEY_ALIAS: ${{ secrets.ETA_RELEASE_KEY_ALIAS }}
+          ETA_RELEASE_KEY_PASSWORD: ${{ secrets.ETA_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ETA_RELEASE_KEYSTORE_BASE64" && -n "$ETA_RELEASE_STORE_PASSWORD" && -n "$ETA_RELEASE_KEY_ALIAS" && -n "$ETA_RELEASE_KEY_PASSWORD" ]]; then
+            printf '%s' "$ETA_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/eta.p12"
+            echo "SIGN_STORE=$RUNNER_TEMP/eta.p12" >> "$GITHUB_ENV"
+            echo "SIGN_STORE_PASS=$ETA_RELEASE_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "SIGN_ALIAS=$ETA_RELEASE_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "SIGN_KEY_PASS=$ETA_RELEASE_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "已使用仓库 Secrets 中的签名证书"
+          else
+            keytool -genkeypair -v \
+              -keystore "$RUNNER_TEMP/eta.p12" \
+              -storepass android -keypass android \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "SIGN_STORE=$RUNNER_TEMP/eta.p12" >> "$GITHUB_ENV"
+            echo "SIGN_STORE_PASS=android" >> "$GITHUB_ENV"
+            echo "SIGN_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
+            echo "SIGN_KEY_PASS=android" >> "$GITHUB_ENV"
+            echo "未配置 Secrets，使用 CI 生成的 debug 证书"
+          fi
+
+      - name: 构建 Release APK
+        env:
+          ETA_RELEASE_STORE_FILE: ${{ env.SIGN_STORE }}
+          ETA_RELEASE_STORE_PASSWORD: ${{ env.SIGN_STORE_PASS }}
+          ETA_RELEASE_KEY_ALIAS: ${{ env.SIGN_ALIAS }}
+          ETA_RELEASE_KEY_PASSWORD: ${{ env.SIGN_KEY_PASS }}
+        run: >-
+          ./gradlew --no-daemon --no-configuration-cache
+          :app:assembleRelease
+
+      - name: 重命名产物
+        run: |
+          set -euo pipefail
+          version="$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts | head -1)"
+          apk="app/build/outputs/apk/release/app-release.apk"
+          test -f "$apk"
+          out="Eta-${version}-ci-${{ github.run_number }}.apk"
+          cp "$apk" "$out"
+          echo "APK_NAME=$out" >> "$GITHUB_ENV"
+          ls -l "$out"
+          sha256sum "$out" | tee "$out.sha256"
+
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-${{ github.run_number }}
+          name: Eta ${{ github.run_number }} (CI build)
+          body: |
+            CI 自动构建：`${{ github.sha }}`
+            - 变体：release（R8 + 资源优化）
+            - 签名：${{ secrets.ETA_RELEASE_KEYSTORE_BASE64 != '' && '仓库 Release 证书' || 'CI 生成的 debug 证书' }}
+          files: |
+            ${{ env.APK_NAME }}
+            ${{ env.APK_NAME }}.sha256
+          draft: false
+          prerelease: true
